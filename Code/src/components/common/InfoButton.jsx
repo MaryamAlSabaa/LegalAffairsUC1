@@ -11,7 +11,10 @@ function InfoButton({ label, description }) {
         className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white hover:bg-slate-50"
         aria-label={label}
         aria-expanded={isOpen}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={(event) => {
+          event.stopPropagation();
+          setIsOpen((open) => !open);
+        }}
       >
         <img className="h-4 w-4" src={infoIcon} alt="" />
       </button>
