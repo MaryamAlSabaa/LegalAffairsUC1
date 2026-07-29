@@ -11,14 +11,24 @@ function RequestPdfResubmissionPanel({ documents, onUpdateDocuments }) {
   const remainingExistingDocuments = documents.filter(
     (document) => !removeDocumentIds.includes(document.id),
   );
+  const hasSupportingDocument =
+    remainingExistingDocuments.length + newFiles.length > 0;
+  const hasDocumentChange = removeDocumentIds.length > 0 || newFiles.length > 0;
 
   function toggleRemoval(documentId) {
-    setRemoveDocumentIds((current) =>
-      current.includes(documentId)
-        ? current.filter((id) => id !== documentId)
-        : [...current, documentId],
+    const nextRemovedDocumentIds = removeDocumentIds.includes(documentId)
+      ? removeDocumentIds.filter((id) => id !== documentId)
+      : [...removeDocumentIds, documentId];
+    const remainingDocumentCount = documents.filter(
+      (document) => !nextRemovedDocumentIds.includes(document.id),
+    ).length;
+
+    setRemoveDocumentIds(nextRemovedDocumentIds);
+    setMessage(
+      remainingDocumentCount + newFiles.length < 1
+        ? "Upload a replacement PDF before resubmitting. Every updated request must keep supporting documentation."
+        : "",
     );
-    setMessage("");
   }
 
   function selectNewFiles(event) {
@@ -105,11 +115,15 @@ function RequestPdfResubmissionPanel({ documents, onUpdateDocuments }) {
 
       <button
         type="button"
-        disabled={isSaving}
+        disabled={isSaving || !hasSupportingDocument || !hasDocumentChange}
         onClick={submitUpdate}
         className="mt-4 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isSaving ? "Uploading and queuing..." : "Submit Document Update for AI Review"}
+        {isSaving
+          ? "Uploading and queuing..."
+          : !hasSupportingDocument
+            ? "Upload a Replacement PDF to Resubmit"
+            : "Submit Document Update for AI Review"}
       </button>
       {message && <p className="mt-3 text-sm font-semibold text-blue-800">{message}</p>}
     </section>
