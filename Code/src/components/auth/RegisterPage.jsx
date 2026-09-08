@@ -2,6 +2,7 @@ import { useState } from "react";
 import { getReadableErrorMessage } from "../../utils/errorMessage";
 import { checkRegistrationAvailability } from "../../services/authService";
 import InfoButton from "../common/InfoButton";
+import AuthShell from "./AuthShell";
 
 const prefixOptions = ["None", "Mr.", "Ms.", "Mrs.", "Dr.", "Prof."];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -31,9 +32,7 @@ function RegisterPage({
   const [availability, setAvailability] = useState({ username: "", email: "" });
 
   function inputClass(fieldName) {
-    return `w-full rounded-lg border px-4 py-3 ${
-      fieldErrors[fieldName] ? "border-red-500 focus:ring-2 focus:ring-red-500" : "border-slate-300"
-    }`;
+    return `field-control ${fieldErrors[fieldName] ? "field-control-error" : ""}`;
   }
 
   function updateField(fieldName, value) {
@@ -91,8 +90,8 @@ function RegisterPage({
       return;
     }
 
-    if (formData.password.length < 6) {
-      const message = "Password must contain at least 6 characters.";
+    if (formData.password.length < 8) {
+      const message = "Password must contain at least 8 characters.";
       setFieldErrors({ password: message });
       setErrorMessage(message);
       return;
@@ -141,7 +140,7 @@ function RegisterPage({
 
       if (normalizedError.includes("email") && normalizedError.includes("invalid")) {
         setErrorMessage(
-          "Supabase rejected this email address. Use a normal address such as reviewer@example.com, or check your Supabase Auth email settings.",
+          "The server rejected this email address. Use a valid address such as reviewer@example.com.",
         );
       } else {
         setErrorMessage(readableError);
@@ -153,9 +152,14 @@ function RegisterPage({
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-8">
-      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl p-8">
-        <div className="flex justify-end mb-4">
+    <AuthShell
+      title="Create requester account"
+      description="Register your KU profile to submit and follow legal matters through the institutional review process."
+      theme={theme}
+      onToggleTheme={onToggleTheme}
+      wide
+    >
+        <div className="hidden">
           <button
             type="button"
             className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-xl leading-none"
@@ -169,13 +173,13 @@ function RegisterPage({
           </button>
         </div>
 
-        <div className="mb-8 text-center">
+        <div className="hidden">
           <p className="text-sm font-semibold text-blue-700">
             Legal Affairs Platform
           </p>
           <h1 className="text-3xl font-bold text-slate-900 mt-2">Register</h1>
           <p className="text-slate-500 mt-2">
-            Create a Supabase Auth account and app profile.
+            Create an account in the shared KU Legal Affairs system.
           </p>
         </div>
 
@@ -187,14 +191,14 @@ function RegisterPage({
 
         <form
           onSubmit={handleSubmit}
-          className="grid grid-cols-1 md:grid-cols-2 gap-5"
+          className="register-grid"
         >
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Prefix
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 px-4 py-3"
+              className="field-control"
               value={formData.prefix}
               onChange={(event) => updateField("prefix", event.target.value)}
             >
@@ -211,7 +215,7 @@ function RegisterPage({
               Full Name
             </label>
             <input
-              className="w-full rounded-lg border border-slate-300 px-4 py-3"
+              className="field-control"
               value={formData.fullName}
               onChange={(event) => updateField("fullName", event.target.value)}
             />
@@ -289,14 +293,14 @@ function RegisterPage({
               </label>
               <InfoButton
                 label="Password requirements"
-                description="Use at least 6 characters. You may use letters, numbers, spaces, and special characters."
+                description="Use at least 8 characters. You may use letters, numbers, spaces, and special characters."
               />
             </div>
             <input
               className={inputClass("password")}
               type="password"
               autoComplete="new-password"
-              minLength={6}
+              minLength={8}
               required
               value={formData.password}
               onChange={(event) => updateField("password", event.target.value)}
@@ -323,7 +327,7 @@ function RegisterPage({
               className={inputClass("confirmPassword")}
               type="password"
               autoComplete="new-password"
-              minLength={6}
+              minLength={8}
               required
               value={formData.confirmPassword}
               onChange={(event) =>
@@ -338,7 +342,7 @@ function RegisterPage({
             )}
           </div>
 
-          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+          <div className="registration-assignment registration-assignment-primary">
             <p className="text-sm font-medium text-slate-700">Role</p>
             <p className="mt-1 font-semibold text-blue-800">Requester</p>
             <p className="mt-1 text-xs text-slate-600">
@@ -346,7 +350,7 @@ function RegisterPage({
             </p>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="registration-assignment">
             <p className="text-sm font-medium text-slate-700">Department</p>
             <p className="mt-1 font-semibold text-slate-900">Legal Affairs</p>
             <p className="mt-1 text-xs text-slate-600">
@@ -362,14 +366,14 @@ function RegisterPage({
 
           <div className="md:col-span-2 flex flex-col sm:flex-row gap-3 mt-2">
             <button
-              className="flex-1 bg-blue-700 text-white rounded-lg py-3 font-semibold hover:bg-blue-800 transition disabled:cursor-not-allowed disabled:opacity-70"
+              className="button-primary flex-1"
               type="submit"
               disabled={isLoading}
             >
               {isLoading ? "Creating account..." : "Create Account"}
             </button>
             <button
-              className="flex-1 border border-slate-300 rounded-lg py-3 font-semibold text-slate-700 hover:bg-slate-50 transition"
+              className="button-secondary flex-1"
               type="button"
               onClick={onShowLogin}
             >
@@ -377,8 +381,7 @@ function RegisterPage({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
 

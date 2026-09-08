@@ -91,7 +91,8 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
         // browser's built-in PDF plugin, which can download PDFs on some setups.
         loadingTask = pdfjsLib.getDocument({
           url: document.url,
-          withCredentials: false,
+          // The API authorizes every PDF request with the user's session cookie.
+          withCredentials: true,
         });
 
         const loadedPdf = await loadingTask.promise;
@@ -130,7 +131,7 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
           <p className="mt-3 text-xs text-red-700">
             The app now uses PDF.js to avoid forced downloads. If this message
             appears, check that the PDF URL is reachable from localhost and that
-            Supabase Storage allows authenticated read access.
+            the central document API allows authenticated read access.
           </p>
         </div>
       </div>

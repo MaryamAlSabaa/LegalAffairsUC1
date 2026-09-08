@@ -1,5 +1,5 @@
 // This file keeps shared demo constants and legacy sample records.
-// The main app now loads requests, users, audit logs, PDFs, and workflow changes from Supabase.
+// The main app now loads requests, users, audit logs, PDFs, and workflow changes from the KU API.
 
 export const roles = [
   "Requester",
@@ -612,14 +612,14 @@ An object stores related information using key-value pairs. Example: { name: 'Ai
 export allows other files to import and use these arrays and objects.
 
 4. Why does this file still exist?
-Some shared constants and legacy teaching samples remain here, but the main workflow uses Supabase data.
+Some shared constants and legacy teaching samples remain here, but the main workflow uses PostgreSQL data through the KU API.
 
 4.1 What are initialUsers?
-initialUsers are legacy teaching samples. The Admin page now receives users loaded from Supabase profiles.
+initialUsers are legacy teaching samples. The Admin page now receives users loaded from the shared database.
 
 4.2 Why are documents objects now?
 Each PDF needs more than a file name. The object stores the PDF URL, checklist page notes, and AI page suggestions for the frontend popup.
 
 5. Should new fullstack features depend on this file?
-Prefer Supabase tables, services, or dedicated config files for new production features.
+Prefer the shared API, PostgreSQL tables, or dedicated config files for new production features.
 */

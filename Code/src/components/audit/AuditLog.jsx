@@ -1,40 +1,32 @@
+import Icon from "../common/Icon";
+
 function AuditLog({ logs }) {
   return (
-    <section>
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-900">Audit Log</h2>
-        <p className="text-slate-500 mt-1">Track important actions for confidentiality and accountability.</p>
+    <section className="audit-page">
+      <div className="page-heading">
+        <div><p className="page-kicker">Governance & assurance</p><h2>Audit log</h2><p>A traceable record of material actions across confidential legal matters.</p></div>
+        <div className="record-count"><span>{logs.length}</span><div><strong>events</strong><small>recorded</small></div></div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <div className="space-y-4">
-          {logs.map((log) => (
-            <div key={log.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 border-b border-slate-100 pb-4 last:border-b-0">
-              <div>
-                <p className="font-semibold text-slate-900">{log.action}</p>
-                <p className="text-sm text-slate-500">Request: {log.requestId} • User: {log.user}</p>
-              </div>
-              <p className="text-sm text-slate-500">{log.time}</p>
-            </div>
+      <div className="audit-layout">
+        <div className="audit-assurance">
+          <span><Icon name="shield" size={20} /></span>
+          <div><strong>Integrity-protected activity</strong><p>Events are retained to support accountability, access review, and institutional governance.</p></div>
+        </div>
+        <div className="audit-list">
+          {logs.length === 0 ? (
+            <div className="audit-empty"><Icon name="activity" size={24} /><strong>No audit events available</strong><p>Material user actions will appear here.</p></div>
+          ) : logs.map((log, index) => (
+            <article className="audit-event" key={log.id}>
+              <div className="audit-timeline"><span><Icon name={index === 0 ? "activity" : "check"} size={15} /></span>{index < logs.length - 1 && <i />}</div>
+              <div className="audit-event-copy"><strong>{log.action}</strong><p><span>{log.requestId}</span> by {log.user}</p></div>
+              <time>{log.time}</time>
+            </article>
           ))}
         </div>
       </div>
-
     </section>
   );
 }
 
 export default AuditLog;
-
-/*
-BEGINNER DOCUMENTATION:
-
-1. What is an audit log?
-An audit log records important actions, such as who viewed, edited, uploaded, approved, or closed a request.
-
-2. Why is it important?
-Legal documents are confidential. Logs help prove accountability and detect unauthorized activity.
-
-3. What is last:border-b-0?
-This is a Tailwind class variant. It removes the bottom border from the last item in the list.
-*/

@@ -8,6 +8,8 @@ import DepartmentApprovalPanel from "./DepartmentApprovalPanel";
 import ManagerActions from "./ManagerActions";
 import PdfReviewModal from "./PdfReviewModal";
 import RequestPdfResubmissionPanel from "./RequestPdfResubmissionPanel";
+import Icon from "../common/Icon";
+import { getDocumentTypeLabel, isPdfDocument } from "../../utils/documentTypes";
 
 function ReviewStatusCard({
   request,
@@ -58,10 +60,10 @@ function ReviewStatusCard({
         </div>
         {showChecklistProgress && (
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-slate-500">AI Checklist Progress</p>
+            <p className="text-slate-500">Review Checklist Progress</p>
             <p className="mt-1 font-bold text-slate-900">
               {totalItems === 0
-                ? "No PDF checklist yet"
+                ? "No document checklist yet"
                 : `${completedItems} of ${totalItems} AI-selected`}
             </p>
           </div>
@@ -118,7 +120,7 @@ function RequestDetails({
   // selectedDocument stores the PDF the user clicked, so we can show it in the popup.
   const [selectedDocument, setSelectedDocument] = useState(null);
 
-  // These two pieces of state make the status card update immediately after Supabase workflow saves.
+  // These two pieces of state make the status card update immediately after workflow saves.
   const [managerDecision, setManagerDecision] = useState(
     "Pending Legal Manager Review",
   );
@@ -139,7 +141,7 @@ function RequestDetails({
 
   if (!request) {
     return (
-      <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 text-center">
+      <section className="workspace-panel p-8 text-center">
         <h2 className="text-2xl font-bold text-slate-900">Request Details</h2>
         <p className="text-slate-500 mt-2">
           Select a legal request from the Legal Requests page to view details.
@@ -158,26 +160,28 @@ function RequestDetails({
 
   return (
     <section>
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-900">Request Details</h2>
-        <p className="text-slate-500 mt-1">
-          Review request information, current status, PDF attachment, and reviewer notes.
-        </p>
+      <div className="page-heading">
+        <div>
+          <p className="page-kicker">Matter workspace</p>
+          <h2>Request details</h2>
+          <p>Review the source record, document analysis, decisions, and assigned actions.</p>
+        </div>
+        <div className="matter-reference"><span>{request.trackingNumber || request.id}</span><small>Tracking number · Confidential matter</small></div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
-          <div className="bg-white border border-slate-200 rounded-2xl p-5">
+          <div className="matter-overview-card">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
               <div>
-                <p className="text-sm text-slate-500">{request.id}</p>
+                <p className="page-kicker">{request.categoryCode} · {request.department}</p>
                 <h3 className="text-xl font-bold text-slate-900 mt-1">
                   {request.title}
                 </h3>
                 <p className="text-slate-600 mt-3">{request.description}</p>
               </div>
               <div className="flex items-center gap-2">
-                <span className="bg-blue-100 text-blue-700 text-sm font-semibold px-3 py-1 rounded-full">
+                <span className="status-badge status-info">
                   {request.status}
                 </span>
                 {onDeleteRequest && (
@@ -230,29 +234,35 @@ function RequestDetails({
             </div>
 
             <div className="mt-6">
-              <h4 className="font-semibold text-slate-900">PDF Attachments</h4>
+              <h4 className="font-semibold text-slate-900">Supporting Documents</h4>
               <p className="text-sm text-slate-500 mt-1">
-                Click a PDF to open the review popup with AI page suggestions.
+                PDFs open in the secure review workspace. Word and Excel files download through the authenticated server.
               </p>
               <ul className="mt-3 space-y-2">
                 {request.documents.length === 0 ? (
-                  <li className="text-sm text-slate-500">No PDF uploaded.</li>
+                  <li className="text-sm text-slate-500">No supporting document uploaded.</li>
                 ) : (
                   request.documents.map((document) => {
                     const documentName = document.name || document;
+                    const isPdf = isPdfDocument(document);
+                    const content = (
+                      <>
+                        <span className="document-row-icon"><Icon name="file" size={19} /></span>
+                        <span className="document-row-copy"><strong>{documentName}</strong><small>{isPdf ? "Open secure PDF review" : `Download secure ${getDocumentTypeLabel(document)} document`}</small></span>
+                        {document.isCurrent && request.previousDocumentId && (
+                          <span className="ml-2 rounded-full bg-green-100 px-2 py-1 text-xs text-green-700">Current</span>
+                        )}
+                        <Icon className="document-row-arrow" name="chevronRight" size={17} />
+                      </>
+                    );
 
                     return (
                       <li key={documentName}>
-                        <button
-                          type="button"
-                          className="w-full rounded-lg bg-slate-50 p-3 text-left text-sm font-semibold text-blue-700 hover:bg-blue-50 hover:underline"
-                          onClick={() => setSelectedDocument(document)}
-                        >
-                          📄 {documentName}
-                          {document.isCurrent && request.previousDocumentId && (
-                            <span className="ml-2 rounded-full bg-green-100 px-2 py-1 text-xs text-green-700">New PDF</span>
-                          )}
-                        </button>
+                        {isPdf ? (
+                          <button type="button" className="document-row" onClick={() => setSelectedDocument(document)}>{content}</button>
+                        ) : (
+                          <a className="document-row" href={document.url} target="_blank" rel="noreferrer">{content}</a>
+                        )}
                       </li>
                     );
                   })

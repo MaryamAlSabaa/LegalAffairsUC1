@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { departments, roles } from "../../data/mockData";
+import Icon from "../common/Icon";
 
 const DEPARTMENT_APPROVER_ROLE = "Department Approver";
 const ADMIN_ROLE = "Admin User";
@@ -30,6 +31,20 @@ function AdminUsers({
 }) {
   const [savingUserId, setSavingUserId] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const filteredUsers = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return users;
+    return users.filter((user) => {
+      const activity = activeUserIds.includes(user.id) ? "active online" : "inactive offline";
+      return [user.name, user.username, user.email, user.id, user.role, user.department, user.status, activity]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [users, searchTerm, activeUserIds]);
 
   async function updateUserRole(userId, newRole) {
     const selectedUser = users.find((user) => user.id === userId);
@@ -128,17 +143,29 @@ function AdminUsers({
 
   return (
     <section>
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-900">
-          Admin: Manage Users & Roles
-        </h2>
-        <p className="text-slate-500 mt-1">
-          Manage Supabase profile roles and departments. Active status updates from
-          the users currently connected to the website.
-        </p>
+      <div className="page-heading table-page-heading">
+        <div>
+          <p className="page-kicker">Identity administration</p>
+          <h2>Manage users and roles</h2>
+          <p>Search all accounts and maintain institutional roles, departments, and access assignments.</p>
+        </div>
+        <div className="record-count"><span>{filteredUsers.length}</span><div><strong>accounts</strong><small>of {users.length} total</small></div></div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="account-search-toolbar">
+          <label className="table-search account-search">
+            <Icon name="search" size={18} />
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search name, username, email, ID, role, department, or activity"
+            />
+            {searchTerm && <button type="button" onClick={() => setSearchTerm("")} aria-label="Clear account search">Clear</button>}
+          </label>
+          <span className="account-search-count">Showing {filteredUsers.length} of {users.length}</span>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
@@ -151,7 +178,9 @@ function AdminUsers({
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {filteredUsers.length === 0 ? (
+                <tr><td className="table-empty" colSpan={5}><span><Icon name="search" size={23} /></span><strong>No matching accounts</strong><p>Try a name, username, email, role, department, or account ID.</p></td></tr>
+              ) : filteredUsers.map((user) => (
                 <tr
                   key={user.id}
                   className="border-t border-slate-100 hover:bg-slate-50"
@@ -247,8 +276,8 @@ function AdminUsers({
       <div className="mt-5 bg-blue-50 border border-blue-200 rounded-2xl p-5 text-slate-700">
         <p className="font-semibold text-blue-950">Security note</p>
         <p className="mt-2">
-          The UI saves profile changes to Supabase, but backend RLS policies must
-          still enforce who is allowed to manage users.
+          The UI saves profile changes through the API, which independently
+          enforces who is allowed to manage users.
         </p>
       </div>
     </section>

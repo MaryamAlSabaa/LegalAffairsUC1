@@ -42,7 +42,7 @@ function ContractChecklist({
 
     if (!item.id) {
       setErrorMessage(
-        "This checklist item does not have a database id yet. Reload data from Supabase and try again.",
+        "This checklist item does not have a database id yet. Reload data from the server and try again.",
       );
       return;
     }
@@ -83,7 +83,7 @@ function ContractChecklist({
       <h3 className="font-bold text-slate-900">Contract Review Checklist</h3>
       <p className="text-sm text-slate-500 mt-1">
         AI pre-selects criteria based on the PDF. Legal reviewers can adjust the
-        checklist manually. Changes are saved to Supabase.
+        checklist manually. Changes are saved to the shared PostgreSQL record.
       </p>
 
       {!canManageReview && (

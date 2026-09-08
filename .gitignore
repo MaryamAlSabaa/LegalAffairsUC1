@@ -5,15 +5,12 @@ Code/dist
 # Frontend and backend local secrets
 Code/.env
 Code/.env.local
-supabase/.env
-supabase/.env.local
-supabase/.env.local*
+server/node_modules
+server/.env
+server/storage/pdfs/*
+!server/storage/pdfs/.gitkeep
 .env
 .env.local
-
-# Supabase local runtime files
-supabase/.branches
-supabase/.temp
 
 # macOS
 .DS_Store

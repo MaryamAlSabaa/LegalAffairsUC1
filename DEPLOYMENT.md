@@ -1,99 +1,162 @@
-# Production Deployment Guide
+# KU Legal Affairs deployment
 
-This project has two deployments:
+## 1. Choose the host
 
-1. **Vercel** hosts the React/Vite frontend in `Code/`.
-2. **Supabase** hosts Auth, PostgreSQL, private PDF Storage, migrations, and the `legal-review` Edge Function.
+For a pilot, one KU-managed Windows PC can host the API, PostgreSQL, and protected documents. For production, use a managed KU server or VM with a stable DNS name, monitoring, disk redundancy, and scheduled backups. If the host is offline, all users lose access.
 
-## 1. Deploy the frontend on Vercel
+The shared components are:
 
-Import the GitHub repository and use these settings:
+- PostgreSQL: workflow records, accounts, sessions, and audit history.
+- `server/storage/pdfs`: the default central document repository (the environment variable name is retained for compatibility).
+- Express on port 4000: the only service browsers should reach.
 
-| Vercel setting | Value |
-| --- | --- |
-| Root Directory | `Code` |
-| Framework Preset | `Vite` |
-| Build Command | `npm run build` |
-| Output Directory | `dist` |
+Do not expose PostgreSQL port 5432 to end users or the public internet.
 
-Add these Vercel environment variables:
+## 2. Configure PostgreSQL and the API
 
-```text
-VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY
-VITE_SUPABASE_FUNCTIONS_URL=https://YOUR_PROJECT_REF.supabase.co/functions/v1
-VITE_USE_MOCK_AI_REVIEW=false
+From the repository root:
+
+```powershell
+cd server
+Copy-Item .env.example .env
 ```
 
-`VITE_` variables are included in browser code. They must never contain server secrets.
+Edit `server/.env` and set at least:
 
-## 2. Deploy Supabase database and Edge Function
-
-From the repository root, link the production Supabase project and apply migrations:
-
-```sh
-supabase login
-supabase link --project-ref YOUR_PROJECT_REF
-supabase db push
-supabase functions deploy legal-review
+```dotenv
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@127.0.0.1:5432/ku_legal_affairs
+HOST=0.0.0.0
+PORT=4000
+PDF_STORAGE_PATH=./storage/pdfs
 ```
 
-### Optional: one-time cloud demo accounts
+If your password contains URL-reserved characters, percent-encode it in `DATABASE_URL`. The PostgreSQL account must be allowed to create the database during first-time initialization. Alternatively, create `ku_legal_affairs` manually and run the initializer afterward.
 
-For a short-lived internship demonstration only, run
-`supabase/snippets/create-cloud-demo-accounts.sql` manually in **Supabase Dashboard → SQL Editor** after the migrations are deployed. It creates seven predictable, non-privileged accounts and **never** runs as part of `supabase db push`.
+Install and initialize:
 
-- It creates no Admin or Owner account.
-- It stops without changing data if any demo email already exists.
-- Delete the accounts after the demonstration.
-
-To add the three matching cloud demo requests after the accounts exist, run `supabase/snippets/create-cloud-demo-requests.sql` manually in **Supabase Dashboard → SQL Editor**. The script is safe to rerun and links each request to a different PDF already deployed in `Code/public/demo-pdfs`.
-
-Set these secrets in the **Supabase** project, not in Vercel:
-
-```sh
-supabase secrets set GEMINI_API_KEY=YOUR_GEMINI_KEY
-supabase secrets set ALLOWED_ORIGINS=https://YOUR_VERCEL_PROJECT.vercel.app
+```powershell
+npm install
+npm run db:init
 ```
 
-For a custom domain, include it too as a comma-separated list:
+For demonstration data only:
 
-```text
-https://YOUR_VERCEL_PROJECT.vercel.app,https://legal.example.edu
+```powershell
+npm run db:seed
 ```
 
-Do not place any of these values in Vercel:
+Never commit `server/.env`. Replace demonstration passwords before connecting real users.
 
-```text
-GEMINI_API_KEY
-SUPABASE_SERVICE_ROLE_KEY
-SUPABASE_SECRET_KEY
-DATABASE_PASSWORD
+## 3. Development access
+
+Start the API:
+
+```powershell
+cd server
+npm run dev
 ```
 
-## 3. Configure Supabase Auth
+In another PowerShell window, start the UI:
 
-In **Supabase Dashboard → Authentication → URL Configuration**:
+```powershell
+cd Code
+npm install
+npm run dev
+```
 
-- Set **Site URL** to the production Vercel URL.
-- Add the Vercel URL to **Redirect URLs**.
-- Add the custom domain too, if one is configured.
+The local operator opens `http://localhost:5173`. A LAN user can open `http://SERVER_IP:5173` while both development processes are running. Development mode accepts LAN origins; do not use this relaxed mode as the permanent production setup.
 
-## 4. Verify production behavior
+## 4. Production or shared pilot
 
-Use non-sensitive test PDFs first:
+Build the React UI:
 
-1. Register a new requester account. It must be created as `Requester` only.
-2. Submit a PDF request and confirm the request is automatically assigned.
-3. Confirm the PDF opens only while signed in and authorized.
-4. Confirm the AI review result is a draft and requires human review.
-5. Confirm reviewer routing and manager reassignment work.
-6. Confirm an unauthorized account cannot open another request or its PDF.
+```powershell
+cd Code
+npm run build
+```
 
-## Security notes
+The API automatically serves `Code/dist`, so only one address is needed. Configure `server/.env` with the final address:
 
-- The `legal-documents` bucket is private. The frontend receives 15-minute signed PDF URLs only after Supabase authorizes the request/document read.
-- Database RLS restricts legal request data to the requester, assigned reviewer, relevant department approver, Legal Manager, or Admin User.
-- Vercel applies basic security headers through `Code/vercel.json`.
-- The Edge Function accepts browser origins configured in the `ALLOWED_ORIGINS` Supabase secret. Update it whenever the production domain changes.
-- Before using real university legal documents, obtain approval for document retention, Gemini data handling, access control, incident response, backups, and data residency.
+```dotenv
+NODE_ENV=production
+PUBLIC_APP_URL=https://legal-affairs.ku.ac.ae
+ALLOWED_ORIGINS=https://legal-affairs.ku.ac.ae
+SECURE_COOKIES=true
+```
+
+Then run:
+
+```powershell
+cd server
+npm start
+```
+
+Use an IT-managed reverse proxy (for example IIS or Nginx) and a KU TLS certificate in front of port 4000. HTTPS protects passwords, session cookies, request data, and PDFs in transit.
+
+For a temporary HTTP-only LAN pilot, set `PUBLIC_APP_URL` and `ALLOWED_ORIGINS` to `http://SERVER_IP:4000` and set `SECURE_COOKIES=false`. Do not use HTTP for sensitive production data.
+
+Allow inbound TCP port 4000 only on the required Domain/Private firewall profile, or expose only the reverse proxy's HTTPS port. Ask KU IT to use a stable hostname instead of relying on a changing workstation IP address.
+
+For an approved LAN pilot, an administrator can create a scoped Windows Firewall rule from an elevated PowerShell window:
+
+```powershell
+New-NetFirewallRule -DisplayName "KU Legal Affairs API" -Direction Inbound -Protocol TCP -LocalPort 4000 -Action Allow -Profile Domain,Private
+```
+
+Run the API as a managed Windows service under a dedicated, least-privilege service account for continuous availability. Do not rely on a user's open terminal for production.
+
+## 5. Shared document storage
+
+Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the host configured by `PDF_STORAGE_PATH`, with metadata and a SHA-256 digest in PostgreSQL. Users receive documents only through an authenticated API endpoint after a role/assignment check. PDFs can open in the review workspace; Office documents are downloaded for manual review.
+
+For production, point `PDF_STORAGE_PATH` to a dedicated encrypted volume or a service-account-protected network share. The account running the Node server needs read/write access; ordinary users do not. Do not place uploaded documents in `Code/public` or OneDrive-synced frontend assets.
+
+## 6. Backups and recovery
+
+Back up these two resources as one recovery set:
+
+1. PostgreSQL with `pg_dump`.
+2. The entire directory configured by `PDF_STORAGE_PATH`.
+
+A database-only backup leaves document records without files; a file-only backup loses permissions and workflow history. Schedule both, encrypt backup media, restrict access, and periodically test restoration on a separate host.
+
+## 7. Email and password reset
+
+Set the SMTP values in `server/.env` to send reset links:
+
+```dotenv
+SMTP_HOST=smtp.example.edu
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=service-account
+SMTP_PASSWORD=CHANGE_ME
+SMTP_FROM=KU Legal Affairs <legal-affairs@example.edu>
+```
+
+Without SMTP, development mode prints the reset link in the server console. Production should use an approved KU mail relay.
+
+## 8. Optional AI provider
+
+The default `USE_MOCK_AI_REVIEW=true` keeps PDFs on the KU host and generates a clearly labelled placeholder for the human-review workflow. It does not perform substantive document analysis.
+
+Only after KU information-security and data-governance approval, configure the server-side provider:
+
+```dotenv
+USE_MOCK_AI_REVIEW=false
+GEMINI_API_KEY=YOUR_SERVER_SIDE_KEY
+GEMINI_MODEL=YOUR_APPROVED_MODEL
+```
+
+The browser never receives the provider key. The server sends only the claimed PDF and an isolated legal-review prompt, validates the JSON response, writes the checklist and suggestions to PostgreSQL, and still requires human Legal Affairs review.
+
+## 9. Verification checklist
+
+- `http://localhost:4000/api/health` reports `database: connected` on the host.
+- Registration and login work without any browser database credentials.
+- A requester sees only their requests.
+- A reviewer sees only assigned requests and can open authorized PDFs.
+- A department approver sees only assigned or same-department requests.
+- Admin/Owner user-management actions are enforced by the API.
+- Another device can open the HTTPS/LAN URL and sees the same records and authorized documents.
+- PostgreSQL 5432 is not exposed to user devices.
+- PostgreSQL and document-storage backups complete and can be restored together.

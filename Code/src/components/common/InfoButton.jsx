@@ -1,5 +1,5 @@
 import { useState } from "react";
-import infoIcon from "../../../Assets/InfoButtonIcon.png";
+import Icon from "./Icon";
 
 function InfoButton({ label, description }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -8,7 +8,7 @@ function InfoButton({ label, description }) {
     <span className="relative inline-flex">
       <button
         type="button"
-        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 bg-white hover:bg-slate-50"
+        className="info-trigger"
         aria-label={label}
         aria-expanded={isOpen}
         onClick={(event) => {
@@ -16,7 +16,7 @@ function InfoButton({ label, description }) {
           setIsOpen((open) => !open);
         }}
       >
-        <img className="h-4 w-4" src={infoIcon} alt="" />
+        <Icon name="help" size={15} />
       </button>
 
       {isOpen && (

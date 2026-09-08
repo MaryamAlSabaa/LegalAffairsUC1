@@ -167,7 +167,7 @@ function ManagerActions({
 
       {isSaving && (
         <p className="mt-4 text-xs font-semibold text-blue-700">
-          Saving manager action to Supabase...
+          Saving manager action to the shared record...
         </p>
       )}
 
@@ -188,6 +188,6 @@ BEGINNER DOCUMENTATION:
 1. Why does Legal Manager have different actions?
 The PDF says Legal Managers assign reviewers, approve responses, monitor dashboard, and close or escalate requests.
 
-2. Why do these buttons save through Supabase?
+2. Why do these buttons save through the API?
 Manager decisions affect workflow state, so they are persisted in manager_actions and legal_requests instead of staying only in browser state.
 */

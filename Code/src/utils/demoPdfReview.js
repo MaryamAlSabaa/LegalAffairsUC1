@@ -1,15 +1,20 @@
 import { legalReviewCriteria } from "../data/mockData";
+import { isPdfDocument } from "./documentTypes";
 
-export function createEmptyChecklistForUploadedPdf() {
+export function createEmptyChecklistForUploadedDocument(documentType = "document") {
   return legalReviewCriteria.map((criteria) => ({
     criteria,
     page: criteria === "Document type identified" ? 1 : "N/A",
     checked: criteria === "Document type identified",
     note:
       criteria === "Document type identified"
-        ? "Frontend demo identifies the uploaded file as a PDF document. Legal Affairs should complete the remaining review criteria."
-        : "AI has not confirmed this criterion for the newly uploaded PDF. Legal Affairs should review it manually.",
+        ? `The uploaded ${documentType} format was identified. Legal Affairs should confirm the content and complete the remaining review criteria.`
+        : "Automated review has not confirmed this criterion for the newly uploaded document. Legal Affairs should review it manually.",
   }));
+}
+
+export function createEmptyChecklistForUploadedPdf() {
+  return createEmptyChecklistForUploadedDocument("PDF");
 }
 
 function buildAiSuggestionsFromReview(aiReviewResult) {
@@ -87,14 +92,20 @@ function buildChecklistFromReview(aiReviewResult) {
 }
 
 export function createFrontendPdfDocument(file, aiReviewResult = null) {
+  return createFrontendDocument(file, aiReviewResult);
+}
+
+export function createFrontendDocument(file, aiReviewResult = null) {
+  const isPdf = isPdfDocument(file);
+  const documentType = isPdf ? "PDF" : "Office document";
   return {
     name: file.name,
-    type: "application/pdf",
-    url: URL.createObjectURL(file),
+    type: file.type || "application/octet-stream",
+    url: isPdf ? URL.createObjectURL(file) : "",
     checklist: aiReviewResult
       ? buildChecklistFromReview(aiReviewResult)
-      : createEmptyChecklistForUploadedPdf(),
-    aiSuggestions: buildAiSuggestionsFromReview(aiReviewResult),
+      : createEmptyChecklistForUploadedDocument(documentType),
+    aiSuggestions: isPdf ? buildAiSuggestionsFromReview(aiReviewResult) : [],
   };
 }
 

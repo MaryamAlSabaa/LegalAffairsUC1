@@ -1,0 +1,25 @@
+{
+  "name": "ku-legal-affairs-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "db:init": "node scripts/init-db.js",
+    "db:seed": "node scripts/seed.js",
+    "check": "node --check server.js && node --check routes/apiRoutes.js && node --check routes/authRoutes.js && node --check services/aiReviewService.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "multer": "^2.3.0",
+    "nodemailer": "^10.0.1",
+    "pg": "^8.23.0"
+  }
+}

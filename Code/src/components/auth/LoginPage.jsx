@@ -1,27 +1,20 @@
 import { useState } from "react";
-import kuLogo from "../../../Assets/KULogo.png";
 import { getReadableErrorMessage } from "../../utils/errorMessage";
+import Icon from "../common/Icon";
+import AuthShell from "./AuthShell";
 
-function LoginPage({
-  onLogin,
-  onShowRegister,
-  onShowForgotPassword,
-  theme,
-  onToggleTheme,
-  backendMessage,
-}) {
-  // State stores what the user types into the login form.
+const demoAccounts = ["requester", "reviewer", "manager", "approver", "admin"];
+
+function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onToggleTheme, backendMessage }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
-  // Demo credentials are local-development only. Hosted Supabase projects use
-  // real accounts created through the registration flow or by an administrator.
   const showDemoAccounts = import.meta.env.DEV;
 
   async function handleSubmit(event) {
-    // preventDefault stops the browser from refreshing the page after form submit.
     event.preventDefault();
     setErrorMessage("");
     setFieldErrors({});
@@ -31,78 +24,47 @@ function LoginPage({
       await onLogin({ username, password });
     } catch (error) {
       const errorCode = error instanceof Error ? error.message : "";
-
       if (errorCode === "USERNAME_NOT_FOUND") {
         setFieldErrors({ identifier: "No account was found for this username." });
         setErrorMessage("Check the highlighted username, or sign in with your email address.");
       } else {
-        // Supabase intentionally returns a generic credential error for email
-        // sign-in, so the form does not reveal whether an email is registered.
         setFieldErrors({ password: "Check your password and try again." });
-        setErrorMessage(
-          getReadableErrorMessage(error, "Could not sign in. Check your password and try again."),
-        );
+        setErrorMessage(getReadableErrorMessage(error, "Could not sign in. Check your credentials and try again."));
       }
     } finally {
       setIsLoading(false);
     }
   }
 
+  function chooseDemoAccount(account) {
+    setUsername(account);
+    setPassword("password123");
+    setErrorMessage("");
+    setFieldErrors({});
+  }
+
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
-        <div className="flex justify-end mb-4">
-          <button
-            type="button"
-            className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-xl leading-none"
-            onClick={onToggleTheme}
-            aria-label="Toggle light and dark mode"
-            title={
-              theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
-            }
-          >
-            {theme === "dark" ? "☀️" : "🌙"}
-          </button>
+    <AuthShell
+      title="Welcome back"
+      description="Sign in to manage legal requests, reviews, approvals, and institutional records."
+      theme={theme}
+      onToggleTheme={onToggleTheme}
+    >
+      {backendMessage && (
+        <div className="system-notice">
+          <span className="system-notice-icon"><Icon name="activity" size={17} /></span>
+          <div><strong>Environment status</strong><p>{backendMessage}</p></div>
         </div>
+      )}
 
-        <div className="mb-8 text-center">
-          <img
-            className="mx-auto h-20 w-40 rounded-2xl border border-slate-200 bg-white object-contain p-4 shadow-sm"
-            src={kuLogo}
-            alt="Khalifa University logo"
-          />
-          <p className="text-sm font-semibold text-blue-700 mt-4">
-            Legal Affairs Platform
-          </p>
-          <h1 className="text-3xl font-bold text-slate-900 mt-2">Login</h1>
-          <p className="text-slate-500 mt-2">
-            Login with your Legal Affairs account.
-          </p>
-        </div>
-
-        {backendMessage && (
-          <div className="mb-5 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-            {backendMessage}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Username or Email
-            </label>
+      <form onSubmit={handleSubmit} className="auth-form">
+        <label className="field-group">
+          <span className="field-label">Username or email</span>
+          <span className={`field-with-icon ${fieldErrors.identifier ? "has-error" : ""}`}>
+            <Icon name="user" size={19} />
             <input
-              className={`w-full rounded-lg border px-4 py-3 focus:outline-none focus:ring-2 ${
-                fieldErrors.identifier
-                  ? "border-red-500 focus:ring-red-500"
-                  : "border-slate-300 focus:ring-blue-500"
-              }`}
               type="text"
-              placeholder={
-                showDemoAccounts
-                  ? "Example: requester, reviewer, or an email"
-                  : "Enter your username or email"
-              }
+              placeholder="Enter your KU account"
               value={username}
               onChange={(event) => {
                 setUsername(event.target.value);
@@ -110,113 +72,60 @@ function LoginPage({
               }}
               aria-invalid={Boolean(fieldErrors.identifier)}
               maxLength={254}
+              autoComplete="username"
               required
             />
-            <p className="mt-1 text-xs text-slate-500">
-              Enter either your application username or your account email address.
-            </p>
-            {fieldErrors.identifier && (
-              <p className="mt-1 text-xs font-semibold text-red-700">
-                {fieldErrors.identifier}
-              </p>
-            )}
-          </div>
+          </span>
+          {fieldErrors.identifier && <span className="field-error">{fieldErrors.identifier}</span>}
+        </label>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Password
-            </label>
+        <label className="field-group">
+          <span className="field-label-row"><span className="field-label">Password</span><button type="button" onClick={onShowForgotPassword}>Forgot password?</button></span>
+          <span className={`field-with-icon ${fieldErrors.password ? "has-error" : ""}`}>
+            <Icon name="lock" size={18} />
             <input
-              className={`w-full rounded-lg border px-4 py-3 focus:outline-none focus:ring-2 ${
-                fieldErrors.password
-                  ? "border-red-500 focus:ring-red-500"
-                  : "border-slate-300 focus:ring-blue-500"
-              }`}
-              type="password"
-              placeholder={
-                showDemoAccounts ? "Demo password: password123" : "Enter your password"
-              }
+              type={showPassword ? "text" : "password"}
+              placeholder="Enter your password"
               value={password}
               onChange={(event) => {
                 setPassword(event.target.value);
                 setFieldErrors((current) => ({ ...current, password: "" }));
               }}
               aria-invalid={Boolean(fieldErrors.password)}
+              autoComplete="current-password"
               maxLength={128}
               required
             />
-            {fieldErrors.password && (
-              <p className="mt-1 text-xs font-semibold text-red-700">
-                {fieldErrors.password}
-              </p>
-            )}
-          </div>
+            <button className="field-action" type="button" onClick={() => setShowPassword((visible) => !visible)}>
+              {showPassword ? "Hide" : "Show"}
+            </button>
+          </span>
+          {fieldErrors.password && <span className="field-error">{fieldErrors.password}</span>}
+        </label>
 
-          {errorMessage && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
-              {errorMessage}
-            </div>
-          )}
+        {errorMessage && <div className="form-alert form-alert-error"><Icon name="warning" size={18} /><span>{errorMessage}</span></div>}
 
-          <button
-            className="w-full bg-blue-700 text-white rounded-lg py-3 font-semibold hover:bg-blue-800 transition disabled:cursor-not-allowed disabled:opacity-70"
-            type="submit"
-            disabled={isLoading}
-          >
-            {isLoading ? "Logging in..." : "Login to Dashboard"}
-          </button>
-        </form>
-
-        <button
-          className="mt-4 w-full text-sm font-semibold text-blue-700 hover:underline"
-          type="button"
-          onClick={onShowForgotPassword}
-        >
-          Forgot password?
+        <button className="button-primary auth-submit" type="submit" disabled={isLoading}>
+          <span>{isLoading ? "Verifying account…" : "Sign in securely"}</span>
+          {!isLoading && <Icon name="arrowRight" size={18} />}
         </button>
+      </form>
 
+      {showDemoAccounts && (
+        <div className="demo-access">
+          <div className="demo-divider"><span>Local demonstration access</span></div>
+          <div className="demo-account-list">
+            {demoAccounts.map((account) => (
+              <button type="button" key={account} onClick={() => chooseDemoAccount(account)}>{account}</button>
+            ))}
+          </div>
+          <p>Select a role to prefill its seeded local account.</p>
+        </div>
+      )}
 
-        <p className="text-center text-sm text-slate-600 mt-6">
-          New user?{" "}
-          <button
-            className="text-blue-700 font-semibold hover:underline"
-            type="button"
-            onClick={onShowRegister}
-          >
-            Create an account
-          </button>
-        </p>
-      </div>
-    </div>
+      <p className="auth-switch">Need access? <button type="button" onClick={onShowRegister}>Create a requester account</button></p>
+    </AuthShell>
   );
 }
 
 export default LoginPage;
-
-/*
-BEGINNER DOCUMENTATION:
-
-1. What is a React component?
-A component is a reusable piece of UI. LoginPage is a component because it returns JSX for the login screen.
-
-2. What is useState?
-useState is a React Hook. It lets the component remember changing values, such as username and password.
-
-3. What is an event?
-An event is something the user does, such as typing, clicking, or submitting a form.
-
-4. What is onChange?
-onChange runs when the user types into an input. We use it to update React state.
-
-5. What is a prop?
-Props are values/functions passed from a parent component. onLogin, onShowRegister, theme, and onToggleTheme come from App.jsx.
-
-6. Why does onLogin use username and password now?
-App.jsx connects this form to Supabase Auth. The login page collects input, and App.jsx decides how to authenticate.
-
-7. Why is the theme button on the login page?
-It lets the user switch between light mode and dark mode before logging in.
-
-8. Why is the theme button icon-only?
-The icon keeps the UI compact. aria-label and title still explain the button for accessibility and hover help.
-*/

@@ -21,5 +21,5 @@ BEGINNER DOCUMENTATION:
 The Legal Affairs PDF gives each role different responsibilities. Legal Reviewers review documents, Legal Managers assign/approve/close, and Department Approvers handle department approval.
 
 2. Is this enough security?
-No. These helpers only decide what to display. Supabase RLS policies must also enforce permissions on every table.
+No. These helpers only decide what to display. The API must enforce permissions for every database operation and PDF download.
 */

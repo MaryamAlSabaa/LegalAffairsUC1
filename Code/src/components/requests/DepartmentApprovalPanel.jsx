@@ -96,7 +96,7 @@ function DepartmentApprovalPanel({
 
       {isSaving && (
         <p className="mt-4 text-xs font-semibold text-blue-700">
-          Saving department decision to Supabase...
+          Saving department decision to the shared record...
         </p>
       )}
 

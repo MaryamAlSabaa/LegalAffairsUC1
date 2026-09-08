@@ -93,7 +93,7 @@ A routing decision changes the request workflow. Requiring a message gives the r
 <textarea> is an HTML form control for longer, multi-line text. It is useful here because a reviewer may need to explain missing documents or a legal concern in detail.
 
 3. Why use async/await and isSaving?
-Routing is saved to Supabase and can take time. async/await waits for that operation, while isSaving disables buttons so a double click cannot create two routing actions.
+Routing is saved through the API and can take time. async/await waits for that operation, while isSaving disables buttons so a double click cannot create two routing actions.
 
 4. Why does the component return null?
 Returning null renders nothing. The Request Details page only shows this panel when the current reviewer is assigned to the request; the database repeats this permission check for security.

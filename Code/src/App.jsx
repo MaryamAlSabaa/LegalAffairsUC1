@@ -17,16 +17,17 @@ import LegalReviewers from "./components/reviewers/LegalReviewers";
 import { navigationByRole } from "./config/navigation";
 
 import {
-  changePasswordWithSupabase,
-  getExistingSupabaseSessionUser,
-  loginWithSupabase,
-  logoutFromSupabase,
-  registerWithSupabase,
+  changePassword,
+  getExistingSessionUser,
+  login,
+  logout,
+  register,
   requestPasswordReset,
-  resetPasswordWithSupabase,
+  resetPassword,
 } from "./services/authService";
 import {
   assignReviewerAsManager,
+  checkBackendConnection,
   createBackendAuditLog,
   createBackendDepartmentApproval,
   createBackendManagerAction,
@@ -43,6 +44,7 @@ import {
   fetchBackendAuditLogs,
   fetchBackendRequests,
   fetchBackendUsers,
+  fetchRequestOverview,
   fetchLegalAffairEngineEvents,
   fetchLegalAffairEngineState,
   setLegalAffairEngineRunning,
@@ -51,11 +53,6 @@ import {
   updateBackendUserDepartment,
   updateBackendUserRole,
 } from "./services/backendDataService";
-import {
-  isSupabaseConfigured,
-  missingSupabaseEnvVars,
-  supabase,
-} from "./services/supabaseClient";
 import { triggerAiReviewQueue } from "./services/legalReviewApi";
 import { formatDateTimeForAudit } from "./utils/dateFormat";
 import {
@@ -113,7 +110,7 @@ function App() {
   // currentPage decides which main section is visible after login.
   const [currentPage, setCurrentPage] = useState("new-request");
 
-  // currentUser is loaded from Supabase Auth + public.profiles after login.
+  // currentUser is loaded from the shared PostgreSQL API after login.
   const [currentUser, setCurrentUser] = useState({
     id: "demo-user",
     name: "Demo User",
@@ -124,8 +121,9 @@ function App() {
     department: "Legal Affairs",
   });
 
-  // These collections are loaded from Supabase PostgreSQL after login.
+  // These collections are loaded from the shared PostgreSQL server after login.
   const [requests, setRequests] = useState([]);
+  const [reviewerOverviewRequests, setReviewerOverviewRequests] = useState([]);
   const [users, setUsers] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [engineState, setEngineState] = useState(null);
@@ -142,11 +140,7 @@ function App() {
   const [currentDepartment, setCurrentDepartment] = useState("Legal Affairs");
 
   const [backendMessage, setBackendMessage] = useState(
-    isSupabaseConfigured
-      ? "Checking Supabase backend connection..."
-      : `Supabase is not configured. Missing: ${missingSupabaseEnvVars.join(
-          ", ",
-        )}.`,
+    "Connecting to the KU Legal Affairs server...",
   );
 
   // theme remembers whether the user wants light mode or dark mode.
@@ -240,18 +234,17 @@ function App() {
 
   useEffect(() => {
     async function restoreSession() {
-      if (!isSupabaseConfigured) return;
-
-      if (new URLSearchParams(window.location.search).get("password-reset") === "true") {
+      if (new URLSearchParams(window.location.search).has("reset-token")) {
         setAuthMode("reset-password");
         setBackendMessage("Choose a new password to finish the recovery process.");
         return;
       }
 
       try {
-        const sessionUser = await getExistingSupabaseSessionUser();
+        const sessionUser = await getExistingSessionUser();
         if (!sessionUser) {
-          setBackendMessage("Supabase backend configured. Please sign in.");
+          await checkBackendConnection();
+          setBackendMessage("Shared PostgreSQL server ready. Please sign in.");
           return;
         }
 
@@ -266,7 +259,7 @@ function App() {
         await loadBackendData(sessionUser);
       } catch (error) {
         setBackendMessage(
-          `Supabase backend is unavailable or not seeded: ${
+          `The shared application server is unavailable: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -274,22 +267,6 @@ function App() {
     }
 
     restoreSession();
-  }, []);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setIsLoggedIn(false);
-        setAuthMode("reset-password");
-        setBackendMessage("Choose a new password to finish the recovery process.");
-      }
-    });
-
-    return () => subscription.unsubscribe();
   }, []);
 
   // When the selected role changes, move the user to the first page allowed for that role.
@@ -322,55 +299,34 @@ function App() {
     accessibleNavigation,
   ]);
 
-  // Every signed-in browser joins this presence channel. Unlike a database status,
-  // Presence automatically clears when a browser disconnects or signs out.
+  // Presence is recorded centrally so all connected users see the same activity state.
   useEffect(() => {
-    if (!isLoggedIn || !isSupabaseConfigured || !supabase || !currentUser?.id) {
+    if (!isLoggedIn || !currentUser?.id) {
       setActiveUserIds([]);
       return undefined;
     }
 
     setActiveUserIds([currentUser.id]);
 
-    const presenceChannel = supabase.channel("legal-affairs-user-presence", {
-      config: { presence: { key: currentUser.id } },
-    });
+    async function heartbeat() {
+      await recordCurrentUserActivity().catch(() => {});
+      const refreshedUsers = await fetchBackendUsers().catch(() => []);
+      if (refreshedUsers.length > 0) {
+        setUsers(refreshedUsers);
+        setActiveUserIds(refreshedUsers.filter((user) => user.isActive).map((user) => user.id));
+      }
+      if (currentUser.role === "Legal Reviewer") {
+        const refreshedOverview = await fetchRequestOverview().catch(() => null);
+        if (refreshedOverview) setReviewerOverviewRequests(refreshedOverview);
+      }
+    }
 
-    const syncActiveUsers = () => {
-      const ids = [
-        ...new Set(
-          Object.values(presenceChannel.presenceState())
-            .flat()
-            .map((presence) => presence.userId)
-            .filter(Boolean),
-        ),
-      ];
-      setActiveUserIds(ids);
-    };
-
-    presenceChannel
-      .on("presence", { event: "sync" }, syncActiveUsers)
-      .on("presence", { event: "join" }, syncActiveUsers)
-      .on("presence", { event: "leave" }, syncActiveUsers)
-      .subscribe(async (status) => {
-        if (status === "SUBSCRIBED") {
-          await presenceChannel.track({ userId: currentUser.id });
-        }
-      });
-
-    return () => {
-      presenceChannel.untrack();
-      supabase.removeChannel(presenceChannel);
-    };
+    heartbeat();
+    const intervalId = window.setInterval(heartbeat, 30_000);
+    return () => window.clearInterval(intervalId);
   }, [isLoggedIn, currentUser?.id]);
 
   async function loadBackendData(userForAccess = currentUser) {
-    if (!isSupabaseConfigured) {
-      throw new Error(
-        `Supabase env vars are missing: ${missingSupabaseEnvVars.join(", ")}`,
-      );
-    }
-
     const canReadEngineData = ["Admin User", "Owner"].includes(
       userForAccess.role,
     );
@@ -381,12 +337,14 @@ function App() {
       backendAuditLogs,
       backendEngineState,
       backendEngineEvents,
+      backendRequestOverview,
     ] = await Promise.all([
       fetchBackendRequests(),
       fetchBackendUsers(),
       fetchBackendAuditLogs().catch(() => []),
       canReadEngineData ? fetchLegalAffairEngineState().catch(() => null) : null,
       canReadEngineData ? fetchLegalAffairEngineEvents().catch(() => []) : [],
+      userForAccess.role === "Legal Reviewer" ? fetchRequestOverview() : [],
     ]);
 
     setRequests(backendRequests);
@@ -394,6 +352,10 @@ function App() {
     setAuditLogs(backendAuditLogs);
     setEngineState(backendEngineState);
     setEngineEvents(backendEngineEvents);
+    setReviewerOverviewRequests(backendRequestOverview);
+    setActiveUserIds([
+      ...new Set([userForAccess.id, ...backendUsers.filter((user) => user.isActive).map((user) => user.id)]),
+    ]);
     // A successful background load does not need a persistent banner in the UI.
     setBackendMessage("");
   }
@@ -405,7 +367,6 @@ function App() {
   useEffect(() => {
     const shouldPollAiState =
       isLoggedIn &&
-      isSupabaseConfigured &&
       (hasActiveAiReview || currentPage === "legal-engine");
 
     if (!shouldPollAiState) return undefined;
@@ -452,7 +413,7 @@ function App() {
   }
 
   async function handleLogin(credentials) {
-    const loggedInUser = await loginWithSupabase(
+    const loggedInUser = await login(
       credentials.username,
       credentials.password,
     );
@@ -461,7 +422,7 @@ function App() {
   }
 
   async function handleRegister(formData) {
-    const registeredUser = await registerWithSupabase(formData);
+    const registeredUser = await register(formData);
     await applyAuthenticatedUser(registeredUser);
   }
 
@@ -471,7 +432,7 @@ function App() {
   }
 
   async function handleResetPassword(newPassword) {
-    await resetPasswordWithSupabase(newPassword);
+    await resetPassword(newPassword);
     window.history.replaceState({}, document.title, window.location.pathname);
     setIsLoggedIn(false);
     setAuthMode("login");
@@ -479,8 +440,7 @@ function App() {
   }
 
   async function handleChangePassword({ currentPassword, newPassword }) {
-    await changePasswordWithSupabase({
-      email: currentUser.email,
+    await changePassword({
       currentPassword,
       newPassword,
     });
@@ -495,9 +455,7 @@ function App() {
   }
 
   async function handleLogout() {
-    if (isSupabaseConfigured) {
-      await logoutFromSupabase();
-    }
+    await logout();
 
     setIsLoggedIn(false);
     setAuthMode("login");
@@ -519,38 +477,28 @@ function App() {
 
     setAuditLogs((currentLogs) => [newLog, ...currentLogs]);
 
-    if (isSupabaseConfigured) {
-      try {
-        await createBackendAuditLog(action, currentUser, requestId);
-      } catch (error) {
-        setBackendMessage(
-          `Audit log saved locally but not in Supabase: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    try {
+      await createBackendAuditLog(action, currentUser, requestId);
+    } catch (error) {
+      setBackendMessage(
+        `The activity is visible in this session, but the central audit log could not be updated: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 
   async function handleCreateRequest(newRequest) {
     try {
-      const savedRequest = isSupabaseConfigured
-        ? await createBackendRequest(newRequest, currentUser)
-        : newRequest;
+      const savedRequest = await createBackendRequest(newRequest, currentUser);
 
       const requestForState = { ...savedRequest };
       delete requestForState.uploadFile;
 
       setRequests([requestForState, ...requests]);
       setSelectedRequestId(requestForState.id);
-      await addAuditLog(
-        "Request submitted; AI review queued",
-        newRequest.requester,
-        newRequest.id,
-      );
-
-      if (isSupabaseConfigured) {
-        triggerAiReviewQueue()
+      setBackendMessage(`Request submitted successfully. Tracking number: ${requestForState.trackingNumber || requestForState.id}`);
+      triggerAiReviewQueue()
           .then(async () => {
             const refreshedRequests = await fetchBackendRequests();
             setRequests(refreshedRequests);
@@ -560,25 +508,24 @@ function App() {
             await createLegalAffairEngineEvent({
               eventType: "requester_queue_trigger_failed",
               level: "error",
-              message: `Requester submitted ${newRequest.id}, but the browser could not start/observe AI queue processing: ${message}`,
+              message: `Requester submitted ${requestForState.id}, but the browser could not start/observe AI queue processing: ${message}`,
               currentUser,
-              requestId: newRequest.id,
+              requestId: requestForState.id,
             }).catch(() => {});
             setBackendMessage(
               `Request was saved, but AI queue processing did not start: ${message}`,
             );
           });
-      }
 
       // Requester users should return to My Requests so they can see the status.
       // Legal staff can go directly to the details screen.
       setCurrentPage(currentRole === "Requester" ? "requests" : "details");
     } catch (error) {
-      const message = `Could not save request to Supabase: ${
+      const message = `Could not save the request to the shared server: ${
         error instanceof Error ? error.message : String(error)
       }`;
       setBackendMessage(message);
-      // Let RequestForm keep the user's entered data and selected PDF on failure.
+      // Let RequestForm keep the user's entered data and selected document on failure.
       throw new Error(message);
     }
   }
@@ -726,13 +673,7 @@ function App() {
   }
 
   async function handleAddRequestComment(requestId, commentText) {
-    if (isSupabaseConfigured) {
-      await createBackendRequestComment({
-        requestId,
-        currentUser,
-        commentText,
-      });
-    }
+    await createBackendRequestComment({ requestId, currentUser, commentText });
 
     setRequests((currentRequests) =>
       currentRequests.map((request) => {
@@ -785,16 +726,17 @@ function App() {
         request.id === requestId
           ? {
               ...request,
-              assignedReviewer: assignment.reviewer_name,
+              assignedReviewer: assignment.reviewerName,
+              assignedReviewerId: assignment.reviewerId,
               managerDecision: "Reviewer assigned by Legal Manager",
-              status: assignment.request_status,
+              status: assignment.status,
             }
           : request,
       ),
     );
 
     await addAuditLog(
-      `Assigned reviewer: ${assignment.reviewer_name}`,
+      `Assigned reviewer: ${assignment.reviewerName}`,
       currentUser.name,
       requestId,
     );
@@ -806,15 +748,18 @@ function App() {
       destination,
       commentText,
     });
-    const destinationLabel =
-      destination === "requester" ? "Requester" : "Legal Manager";
+    const destinationLabel = {
+      requester: "Requester",
+      legal_manager: "Legal Manager",
+      department_approver: "Department Approver",
+    }[destination] || "workflow recipient";
 
     setRequests((currentRequests) =>
       currentRequests.map((request) =>
         request.id === requestId
           ? {
               ...request,
-              status: routedRequest.request_status,
+              status: routedRequest.status,
               reviewerComments: [
                 ...(request.reviewerComments || []),
                 {
@@ -977,6 +922,11 @@ function App() {
                 : "requests",
             );
           }}
+          currentUser={currentUser}
+          allRequests={
+            currentRole === "Legal Reviewer" ? reviewerOverviewRequests : visibleRequests
+          }
+          onSelectRequest={handleSelectRequest}
         />
       );
     }
@@ -1176,26 +1126,29 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 lg:flex">
+    <div className="app-shell">
       <Sidebar
         currentPage={currentPage}
         onChangePage={setCurrentPage}
         navigationItems={navigationItemsForSidebar}
+        currentUser={currentUser}
       />
 
-      <div className="flex-1 min-w-0">
+      <div className="app-workspace">
         <Header
           currentUser={currentUser}
+          currentPage={currentPage}
           onLogout={handleLogout}
           onChangePassword={handleChangePassword}
           theme={theme}
           onToggleTheme={handleToggleTheme}
         />
 
-        <main className="p-6 lg:p-8">
+        <main className="app-content">
           {backendMessage && (
-            <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-              {backendMessage}
+            <div className="backend-notice">
+              <span className="backend-notice-dot" />
+              <div><strong>System message</strong><p>{backendMessage}</p></div>
             </div>
           )}
           {renderCurrentPage()}
@@ -1233,9 +1186,9 @@ Props pass data or functions from a parent component to a child component.
 Example: <Header currentUser={currentUser} /> passes the logged-in user profile to Header.
 
 7. Where is the backend now?
-The app uses Supabase Auth and PostgreSQL for login, requests, comments, checklist updates, approvals, profile changes, audit logs, PDF storage, and the Gemini Edge Function.
+The app uses the KU API and PostgreSQL for login, requests, comments, checklist updates, approvals, profile changes, audit logs, and centrally stored PDFs.
 
-8. What happens if Supabase is stopped?
+8. What happens if the API or PostgreSQL is stopped?
 The app shows a backend message and protected actions fail clearly instead of silently hiding the backend problem.
 
 9. What is useEffect?

@@ -6,7 +6,7 @@ function describeOwnerActionError(error) {
     const message = error.message || error.details || error.hint || error.error;
     if (message) return String(message);
   }
-  return "Owner action failed. Check that the latest Supabase migrations were deployed.";
+  return "Owner action failed. Check the API connection and apply the latest PostgreSQL schema.";
 }
 
 function OwnerControls({ onResetAiResults, onDeleteClosedRequests }) {

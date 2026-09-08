@@ -1,0 +1,612 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { Router } from "express";
+import multer from "multer";
+import { config } from "../config.js";
+import { query, transaction } from "../db.js";
+import { mapUser, requireAuth, requireRoles } from "../middleware/auth.js";
+import { highestRiskLevel, reviewLegalPdf } from "../services/aiReviewService.js";
+import { canAccessRequest, getDocumentForUser, listRequestOverview, listRequests } from "../services/requestService.js";
+
+const router = Router();
+const supportedDocumentTypes = {
+  ".pdf": { mimeType: "application/pdf", family: "pdf" },
+  ".doc": { mimeType: "application/msword", family: "ole" },
+  ".docx": { mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", family: "word-zip" },
+  ".xls": { mimeType: "application/vnd.ms-excel", family: "ole" },
+  ".xlsx": { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", family: "excel-zip" },
+};
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  fileFilter: (_req, file, callback) => {
+    const isSupported = Boolean(supportedDocumentTypes[path.extname(file.originalname).toLowerCase()]);
+    callback(isSupported ? null : Object.assign(new Error("Only PDF, Word (.doc/.docx), and Excel (.xls/.xlsx) documents are accepted."), { status: 400 }), isSupported);
+  },
+});
+
+function assertSupportedDocument(file) {
+  if (!file) throw Object.assign(new Error("A supporting document is required."), { status: 400 });
+  const extension = path.extname(file.originalname).toLowerCase();
+  const format = supportedDocumentTypes[extension];
+  if (!format) throw Object.assign(new Error("Unsupported document type."), { status: 400 });
+
+  const isPdf = file.buffer.subarray(0, 5).toString("ascii") === "%PDF-";
+  const oleSignature = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  const isOle = file.buffer.subarray(0, 8).equals(oleSignature);
+  const isZip = file.buffer[0] === 0x50 && file.buffer[1] === 0x4b;
+  const zipIndex = isZip ? file.buffer.toString("latin1") : "";
+  const signatureMatches = format.family === "pdf"
+    ? isPdf
+    : format.family === "ole"
+      ? isOle
+      : format.family === "word-zip"
+        ? isZip && zipIndex.includes("word/")
+        : isZip && zipIndex.includes("xl/");
+
+  if (!signatureMatches) {
+    throw Object.assign(new Error(`The uploaded ${extension} file does not match its declared document format.`), { status: 400 });
+  }
+  return { ...format, extension, isPdf: format.family === "pdf" };
+}
+
+function parseJson(value, fallback = {}) {
+  if (!value) return fallback;
+  try { return typeof value === "string" ? JSON.parse(value) : value; }
+  catch { throw Object.assign(new Error("The submitted request metadata is invalid."), { status: 400 }); }
+}
+
+function safeStoragePath(relativePath) {
+  const absolutePath = path.resolve(config.pdfStoragePath, relativePath);
+  const storageRoot = `${path.resolve(config.pdfStoragePath)}${path.sep}`;
+  if (!absolutePath.startsWith(storageRoot)) throw Object.assign(new Error("Invalid document storage path."), { status: 500 });
+  return absolutePath;
+}
+
+async function saveDocument(requestId, file) {
+  const format = assertSupportedDocument(file);
+  const directory = path.join(config.pdfStoragePath, requestId);
+  await fs.promises.mkdir(directory, { recursive: true });
+  const relativePath = path.posix.join(requestId, `${crypto.randomUUID()}${format.extension}`);
+  const absolutePath = safeStoragePath(relativePath);
+  await fs.promises.writeFile(absolutePath, file.buffer, { flag: "wx" });
+  return {
+    relativePath,
+    absolutePath,
+    sha256: crypto.createHash("sha256").update(file.buffer).digest("hex"),
+    mimeType: format.mimeType,
+    isPdf: format.isPdf,
+  };
+}
+
+async function removeStoredFiles(paths) {
+  await Promise.all(paths.filter(Boolean).map(async (storedPath) => {
+    try { await fs.promises.unlink(safeStoragePath(storedPath)); }
+    catch (error) { if (error.code !== "ENOENT") console.error("Could not remove stored document", error); }
+  }));
+}
+
+function statusForManagerDecision(decision) {
+  if (decision === "Closed by Legal Manager") return "Closed";
+  if (decision === "Response Approved by Legal Manager") return "Approved";
+  if (decision === "Reviewer Assignment Started") return "Assigned to Legal Reviewer";
+  return "Under Review";
+}
+
+function statusForDepartmentDecision(decision) {
+  if (decision === "Department Approved") return "Sent for Internal Approval";
+  if (decision === "Department Requested Revision") return "Returned for Revision";
+  return "Under Review";
+}
+
+const managerDecisions = new Set([
+  "Response Approved by Legal Manager",
+  "Closed by Legal Manager",
+  "Escalated by Legal Manager",
+  "Reviewer Assignment Started",
+]);
+const departmentDecisions = new Set(["Department Approved", "Department Requested Revision"]);
+
+router.use(requireAuth);
+
+router.get("/health/private", (_req, res) => res.json({ ok: true }));
+
+router.post("/activity", async (req, res, next) => {
+  try {
+    await query("update users set last_seen_at = now() where id = $1", [req.user.id]);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.get("/users", async (req, res, next) => {
+  try {
+    if (!["Owner", "Admin User", "Legal Manager"].includes(req.user.role)) return res.json([]);
+    const result = await query(
+      `select u.id, u.username, u.full_name, u.email, u.prefix, u.status,
+              r.name as role_name, d.name as department_name,
+              (u.last_seen_at > now() - interval '2 minutes') as is_active
+       from users u join roles r on r.id = u.role_id join departments d on d.id = u.department_id
+       order by u.full_name`,
+    );
+    res.json(result.rows.map(mapUser));
+  } catch (error) { next(error); }
+});
+
+router.patch("/users/:userId/role", requireRoles("Owner", "Admin User"), async (req, res, next) => {
+  try {
+    if (req.params.userId === req.user.id) return res.status(400).json({ error: "You cannot change your own role." });
+    const target = await query(`select r.name as role_name from users u join roles r on r.id = u.role_id where u.id = $1`, [req.params.userId]);
+    if (!target.rows[0]) return res.status(404).json({ error: "User not found." });
+    if (req.user.role === "Admin User" && ["Admin User", "Owner"].includes(target.rows[0].role_name)) return res.status(403).json({ error: "Only an Owner can manage privileged accounts." });
+    if (req.user.role === "Admin User" && req.body.roleName === "Owner") return res.status(403).json({ error: "Only an Owner can assign the Owner role." });
+    const role = await query("select id from roles where name = $1", [req.body.roleName]);
+    if (!role.rows[0]) return res.status(400).json({ error: "Unknown role." });
+    await query(`update users set role_id = $1, department_id = case when $1 = 'department_approver' then department_id else 'legal_affairs' end where id = $2`, [role.rows[0].id, req.params.userId]);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.patch("/users/:userId/department", requireRoles("Owner", "Admin User"), async (req, res, next) => {
+  try {
+    const department = await query("select id from departments where name = $1", [req.body.departmentName]);
+    if (!department.rows[0]) return res.status(400).json({ error: "Unknown department." });
+    await query("update users set department_id = $1 where id = $2", [department.rows[0].id, req.params.userId]);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.get("/audit", async (req, res, next) => {
+  try {
+    if (!["Owner", "Admin User"].includes(req.user.role)) return res.json([]);
+    const result = await query("select id, request_id, action, actor_name, created_at from audit_logs order by created_at desc limit 1000");
+    res.json(result.rows.map((row) => ({ id: row.id, requestId: row.request_id || "System", action: row.action, user: row.actor_name, time: new Date(row.created_at).toLocaleString("en-AE") })));
+  } catch (error) { next(error); }
+});
+
+router.post("/audit", async (req, res, next) => {
+  try {
+    const requestId = req.body.requestId === "System" ? null : req.body.requestId || null;
+    await query("insert into audit_logs (request_id, action, actor_id, actor_name, ip_address) values ($1, $2, $3, $4, $5)", [requestId, String(req.body.action || "Activity").slice(0, 1000), req.user.id, req.user.name, req.ip]);
+    res.status(201).json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+router.get("/requests", async (req, res, next) => {
+  try { res.json(await listRequests(req.user)); }
+  catch (error) { next(error); }
+});
+
+router.get("/requests/overview", requireRoles("Legal Reviewer", "Legal Manager", "Owner"), async (req, res, next) => {
+  try { res.json(await listRequestOverview(req.user)); }
+  catch (error) { next(error); }
+});
+
+router.post("/requests", upload.single("attachment"), async (req, res, next) => {
+  let savedFile;
+  try {
+    assertSupportedDocument(req.file);
+    const data = parseJson(req.body.metadata);
+    if (!String(data.title || "").trim() || !String(data.description || "").trim()) return res.status(400).json({ error: "Title and description are required." });
+    if (!['Low', 'Medium', 'High', 'Urgent'].includes(data.priority)) return res.status(400).json({ error: "Invalid priority." });
+
+    const sequence = await query("select nextval('legal_request_number_seq') as number");
+    const requestId = `LA-${new Date().getFullYear()}-${String(sequence.rows[0].number).padStart(5, "0")}`;
+    savedFile = await saveDocument(requestId, req.file);
+
+    await transaction(async (client) => {
+      // A PostgreSQL transaction uses one client connection, so issue its
+      // queries sequentially instead of overlapping operations on that client.
+      const department = await client.query("select id from departments where name = $1", [data.department]);
+      const category = await client.query("select code from legal_categories where code = $1", [data.categoryCode]);
+      const reviewer = await client.query(`select u.id from users u join roles r on r.id = u.role_id left join legal_requests lr on lr.assigned_reviewer_id = u.id and lr.status not in ('Closed','Archived','Approved') where r.id = 'legal_reviewer' and u.status = 'Active' group by u.id order by count(lr.id), u.last_seen_at desc nulls last limit 1`);
+      const manager = await client.query(`select u.id from users u join roles r on r.id = u.role_id where r.id = 'legal_manager' and u.status = 'Active' order by u.last_seen_at desc nulls last limit 1`);
+      const approver = await client.query(`select u.id from users u join roles r on r.id = u.role_id join departments d on d.id = u.department_id where r.id = 'department_approver' and d.name = $1 and u.status = 'Active' order by u.last_seen_at desc nulls last limit 1`, [data.department]);
+      if (!department.rows[0] || !category.rows[0]) throw Object.assign(new Error("Department or legal category was not found."), { status: 400 });
+
+      const initialStatus = savedFile.isPdf
+        ? "AI Review Pending"
+        : reviewer.rows[0]?.id
+          ? "Assigned to Legal Reviewer"
+          : "New";
+      const initialSummary = savedFile.isPdf
+        ? data.aiSummary || "AI legal review is pending."
+        : "Office document secured for manual Legal Affairs review. Automated page-level analysis is available for PDF documents only.";
+
+      await client.query(
+        `insert into legal_requests (id, title, description, requester_id, department_id, category_code, assigned_reviewer_id, assigned_manager_id, assigned_department_approver_id, priority, risk_level, status, deadline, ai_summary)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [requestId, data.title.trim(), data.description.trim(), req.user.id, department.rows[0].id, data.categoryCode, reviewer.rows[0]?.id || null, manager.rows[0]?.id || null, approver.rows[0]?.id || null, data.priority, data.riskLevel || "Not Classified", initialStatus, data.deadline && data.deadline !== "No deadline selected" ? data.deadline : null, initialSummary],
+      );
+      const document = await client.query(
+        `insert into request_documents (request_id, file_name, mime_type, storage_path, size_bytes, sha256) values ($1,$2,$3,$4,$5,$6) returning id`,
+        [requestId, req.file.originalname.slice(0, 255), savedFile.mimeType, savedFile.relativePath, req.file.size, savedFile.sha256],
+      );
+
+      const checklist = data.documents?.[0]?.checklist || [];
+      const criteria = await client.query("select id, criteria from legal_review_criteria");
+      const criteriaMap = new Map(criteria.rows.map((item) => [item.criteria, item.id]));
+      for (const item of checklist) {
+        const criteriaId = criteriaMap.get(item.criteria);
+        if (criteriaId) await client.query(`insert into request_checklist_items (request_id, document_id, criteria_id, page, checked, note) values ($1,$2,$3,$4,$5,$6) on conflict do nothing`, [requestId, document.rows[0].id, criteriaId, String(item.page || "N/A"), Boolean(item.checked), item.note || ""]);
+      }
+      if (savedFile.isPdf) {
+        await client.query(
+          `insert into ai_review_jobs (request_id, document_id, queue_order, operational_trace) values ($1,$2,$3,$4::jsonb)`,
+          [requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Request saved and PDF secured in the central repository." }])],
+        );
+      }
+      await client.query(
+        "insert into audit_logs (request_id, action, actor_id, actor_name, ip_address) values ($1,$2,$3,$4,$5)",
+        [requestId, savedFile.isPdf ? "Request submitted; PDF review queued" : "Request submitted; Office document secured for manual review", req.user.id, req.user.name, req.ip],
+      );
+    });
+
+    const created = (await listRequests(req.user)).find((request) => request.id === requestId);
+    res.status(201).json(created);
+  } catch (error) {
+    if (savedFile) await removeStoredFiles([savedFile.relativePath]);
+    next(error);
+  }
+});
+
+router.patch("/requests/:requestId/documents", upload.array("files", 5), async (req, res, next) => {
+  const savedFiles = [];
+  let queuedPdfCount = 0;
+  try {
+    if (req.user.role !== "Requester") return res.status(403).json({ error: "Only the requester can replace requested documents." });
+    const ownership = await query("select * from legal_requests where id = $1 and requester_id = $2", [req.params.requestId, req.user.id]);
+    if (!ownership.rows[0]) return res.status(404).json({ error: "Request not found." });
+    if (ownership.rows[0].status !== "Waiting for More Information") return res.status(409).json({ error: "Documents can only be updated while more information is requested." });
+    for (const file of req.files || []) {
+      assertSupportedDocument(file);
+      savedFiles.push({ file, ...(await saveDocument(req.params.requestId, file)) });
+    }
+    const metadata = parseJson(req.body.metadata, { removeDocumentIds: [] });
+    const removeDocumentIds = Array.isArray(metadata.removeDocumentIds) ? metadata.removeDocumentIds : [];
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (removeDocumentIds.some((id) => !uuidPattern.test(String(id)))) throw Object.assign(new Error("A document identifier is invalid."), { status: 400 });
+    if (savedFiles.length === 0 && removeDocumentIds.length === 0) throw Object.assign(new Error("Choose at least one document change."), { status: 400 });
+    const removedPaths = [];
+    const newIds = await transaction(async (client) => {
+      const previous = await client.query("select id from request_documents where request_id = $1 and is_current = true order by created_at desc limit 1", [req.params.requestId]);
+      if (removeDocumentIds.length) {
+        const removed = await client.query("delete from request_documents where request_id = $1 and id = any($2::uuid[]) returning storage_path", [req.params.requestId, removeDocumentIds]);
+        removedPaths.push(...removed.rows.map((row) => row.storage_path));
+      }
+      if (savedFiles.length > 0) {
+        await client.query("update request_documents set is_current = false where request_id = $1", [req.params.requestId]);
+      }
+      const ids = [];
+      for (const saved of savedFiles) {
+        const document = await client.query(
+          `insert into request_documents (request_id,file_name,mime_type,storage_path,size_bytes,sha256,is_current)
+           values ($1,$2,$3,$4,$5,$6,true) returning id`,
+          [req.params.requestId, saved.file.originalname.slice(0,255), saved.mimeType, saved.relativePath, saved.file.size, saved.sha256],
+        );
+        ids.push(document.rows[0].id);
+        if (saved.isPdf) {
+          queuedPdfCount += 1;
+          await client.query(
+            `insert into ai_review_jobs (request_id,document_id,queue_order,operational_trace) values ($1,$2,$3,$4::jsonb)`,
+            [req.params.requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Replacement PDF secured and queued." }])],
+          );
+        }
+      }
+
+      if (savedFiles.length === 0) {
+        const remaining = await client.query("select id,mime_type from request_documents where request_id=$1 and is_current=true", [req.params.requestId]);
+        if (remaining.rowCount === 0) throw Object.assign(new Error("At least one current document must remain attached."), { status: 400 });
+        for (const document of remaining.rows.filter((item) => item.mime_type === "application/pdf")) {
+          queuedPdfCount += 1;
+          await client.query(
+            `insert into ai_review_jobs(request_id,document_id,queue_order,operational_trace)
+             values($1,$2,$3,$4::jsonb)
+             on conflict(request_id,document_id) do update
+             set status='queued',queue_order=excluded.queue_order,attempt_count=0,last_error=null,
+                 started_at=null,completed_at=null,current_step='Requeued after document update',
+                 operational_trace=ai_review_jobs.operational_trace || excluded.operational_trace`,
+            [req.params.requestId, document.id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Remaining PDF requeued after the document set changed." }])],
+          );
+        }
+      }
+
+      const previousId = previous.rows[0]?.id;
+      const retainedPreviousId = previousId && !removeDocumentIds.includes(previousId) ? previousId : null;
+      const hasQueuedPdf = queuedPdfCount > 0;
+      await client.query(
+        `update legal_requests
+         set previous_document_id=case when $1 then $2 else previous_document_id end,
+              previous_ai_summary=ai_summary,previous_ai_review_result=ai_review_result,
+              ai_summary=case when $3 then 'Updated PDF document set queued for AI review.' else 'Office document set secured for manual Legal Affairs review.' end,
+              ai_review_result=null,
+              status=case when $3 then 'AI Review Pending' when assigned_reviewer_id is null then 'New' else 'Assigned to Legal Reviewer' end
+         where id=$4`,
+        [savedFiles.length > 0, retainedPreviousId, hasQueuedPdf, req.params.requestId],
+      );
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name,ip_address) values($1,'Requester updated supporting documents',$2,$3,$4)", [req.params.requestId, req.user.id, req.user.name, req.ip]);
+      return ids;
+    });
+    await removeStoredFiles(removedPaths);
+    res.json(newIds);
+  } catch (error) {
+    await removeStoredFiles(savedFiles.map((file) => file.relativePath));
+    next(error);
+  }
+});
+
+router.get("/documents/:documentId/file", async (req, res, next) => {
+  try {
+    const document = await getDocumentForUser(req.user, req.params.documentId);
+    if (!document) return res.status(404).json({ error: "Document not found or access denied." });
+    const absolutePath = safeStoragePath(document.storage_path);
+    await fs.promises.access(absolutePath, fs.constants.R_OK);
+    const safeName = document.file_name.replace(/[\r\n"]/g, "_");
+    const disposition = document.mime_type === "application/pdf" ? "inline" : "attachment";
+    res.set({ "Content-Type": document.mime_type || "application/octet-stream", "Content-Disposition": `${disposition}; filename="${safeName}"`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+    res.sendFile(absolutePath);
+  } catch (error) {
+    if (error.code === "ENOENT") return res.status(404).json({ error: "The document is missing from server storage." });
+    next(error);
+  }
+});
+
+router.post("/requests/:requestId/comments", async (req, res, next) => {
+  try {
+    if (!await canAccessRequest(req.user, req.params.requestId)) return res.status(404).json({ error: "Request not found." });
+    const text = String(req.body.commentText || "").trim();
+    if (!text) return res.status(400).json({ error: "Comment text is required." });
+    await query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, text]);
+    res.status(201).json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/assign-reviewer", requireRoles("Legal Manager", "Owner"), async (req, res, next) => {
+  try {
+    const reviewer = await query(`select u.id,u.full_name from users u join roles r on r.id=u.role_id where u.id=$1 and r.id='legal_reviewer' and u.status='Active'`, [req.body.reviewerId]);
+    if (!reviewer.rows[0]) return res.status(400).json({ error: "Select an active Legal Reviewer." });
+    const result = await query(`update legal_requests set assigned_reviewer_id=$1,status='Assigned to Legal Reviewer',manager_decision='Reviewer Assignment Started' where id=$2 returning id`, [req.body.reviewerId, req.params.requestId]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Request not found." });
+    res.json({ reviewerId: reviewer.rows[0].id, reviewerName: reviewer.rows[0].full_name, status: "Assigned to Legal Reviewer", managerDecision: "Reviewer Assignment Started" });
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/route", requireRoles("Legal Reviewer", "Owner"), async (req, res, next) => {
+  try {
+    const destinations = { requester: "Waiting for More Information", legal_manager: "Sent for Internal Approval", department_approver: "Under Review" };
+    const status = destinations[req.body.destination];
+    if (!status) return res.status(400).json({ error: "Unknown routing destination." });
+    const result = await query(`update legal_requests set status=$1 where id=$2 and ($3='Owner' or assigned_reviewer_id=$4) returning id`, [status, req.params.requestId, req.user.role, req.user.id]);
+    if (!result.rows[0]) return res.status(403).json({ error: "You are not assigned to this request." });
+    await query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, String(req.body.commentText || "")]);
+    res.json({ status });
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/manager-action", requireRoles("Legal Manager", "Owner"), async (req, res, next) => {
+  try {
+    const decision = String(req.body.decision || "");
+    if (!managerDecisions.has(decision)) return res.status(400).json({ error: "Unknown manager decision." });
+    const status = statusForManagerDecision(decision);
+    await transaction(async (client) => {
+      await client.query("insert into manager_actions(request_id,manager_id,action) values($1,$2,$3)", [req.params.requestId, req.user.id, decision]);
+      const updated = await client.query("update legal_requests set manager_decision=$1,status=$2 where id=$3 returning id", [decision, status, req.params.requestId]);
+      if (!updated.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
+    });
+    res.json({ managerDecision: decision, status });
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/department-approval", requireRoles("Department Approver", "Owner"), async (req, res, next) => {
+  try {
+    const decision = String(req.body.decision || "");
+    if (!departmentDecisions.has(decision)) return res.status(400).json({ error: "Unknown department decision." });
+    const status = statusForDepartmentDecision(decision);
+    await transaction(async (client) => {
+      const updated = await client.query(
+        `update legal_requests
+         set department_decision=$1,status=$2
+         where id=$3
+           and ($4='Owner' or assigned_department_approver_id=$5 or department_id=$6)
+         returning id`,
+        [decision, status, req.params.requestId, req.user.role, req.user.id, req.user.departmentId],
+      );
+      if (!updated.rows[0]) throw Object.assign(new Error("Request not found or not assigned to your department."), { status: 403 });
+      await client.query("insert into department_approvals(request_id,approver_id,decision,comment_text) values($1,$2,$3,$4)", [req.params.requestId, req.user.id, decision, String(req.body.commentText || "")]);
+    });
+    res.json({ departmentDecision: decision, status });
+  } catch (error) { next(error); }
+});
+
+router.patch("/checklist/:itemId", requireRoles("Legal Reviewer", "Owner"), async (req, res, next) => {
+  try {
+    const result = await query(
+      `update request_checklist_items ci
+       set checked=$1
+       from legal_requests lr
+       where ci.id=$2 and lr.id=ci.request_id
+         and ($3='Owner' or lr.assigned_reviewer_id=$4)
+       returning ci.id`,
+      [Boolean(req.body.checked), req.params.itemId, req.user.role, req.user.id],
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: "Checklist item not found or not assigned to you." });
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.get("/engine/state", requireRoles("Admin User", "Owner"), async (_req, res, next) => {
+  try {
+    const result = await query(`select c.is_running,c.updated_at,u.full_name from ai_engine_control c left join users u on u.id=c.updated_by where c.id='legal_affair_engine'`);
+    const row = result.rows[0];
+    res.json({ isRunning: row.is_running, updatedAt: new Date(row.updated_at).toLocaleString("en-AE"), updatedBy: row.full_name || "System" });
+  } catch (error) { next(error); }
+});
+
+router.patch("/engine/state", requireRoles("Admin User", "Owner"), async (req, res, next) => {
+  try {
+    const result = await query(`update ai_engine_control set is_running=$1,updated_by=$2,updated_at=now() where id='legal_affair_engine' returning is_running,updated_at`, [Boolean(req.body.isRunning), req.user.id]);
+    res.json({ isRunning: result.rows[0].is_running, updatedAt: new Date(result.rows[0].updated_at).toLocaleString("en-AE"), updatedBy: req.user.name });
+  } catch (error) { next(error); }
+});
+
+router.get("/engine/events", requireRoles("Admin User", "Owner"), async (_req, res, next) => {
+  try {
+    const result = await query(`select e.*,u.full_name from ai_engine_events e left join users u on u.id=e.actor_id order by e.created_at desc limit 200`);
+    res.json(result.rows.map((event) => ({ id: event.id, eventType: event.event_type, level: event.level, message: event.message, requestId: event.request_id, jobId: event.job_id, metadata: event.metadata || {}, actorName: event.full_name || "System", createdAt: event.created_at, displayTime: new Date(event.created_at).toLocaleString("en-AE") })));
+  } catch (error) { next(error); }
+});
+
+router.post("/engine/events", requireRoles("Admin User", "Owner"), async (req, res, next) => {
+  try {
+    await query(`insert into ai_engine_events(event_type,level,message,request_id,job_id,actor_id,metadata) values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [req.body.eventType, req.body.level || "info", req.body.message, req.body.requestId || null, req.body.jobId || null, req.user.id, JSON.stringify(req.body.metadata || {})]);
+    res.status(201).json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+router.patch("/ai-jobs/:jobId/order", requireRoles("Admin User", "Owner"), async (req, res, next) => {
+  try { await query(`update ai_review_jobs set queue_order=$1,current_step='Queue order adjusted by administrator' where id=$2 and status='queued'`, [Number(req.body.queueOrder), req.params.jobId]); res.status(204).end(); }
+  catch (error) { next(error); }
+});
+
+router.post("/engine/rebuild", requireRoles("Admin User", "Owner"), async (_req, res, next) => {
+  try {
+    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order) select d.request_id,d.id,(extract(epoch from now())*1000)::bigint+row_number() over() from request_documents d join legal_requests lr on lr.id=d.request_id left join ai_review_jobs j on j.document_id=d.id where d.is_current=true and d.mime_type='application/pdf' and lr.ai_review_result is null and j.id is null on conflict do nothing returning id`);
+    res.json({ count: result.rowCount });
+  } catch (error) { next(error); }
+});
+
+router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester"), async (req, res, next) => {
+  let claimedJob = null;
+  try {
+    claimedJob = await transaction(async (client) => {
+      const engine = await client.query(`select is_running from ai_engine_control where id='legal_affair_engine'`);
+      if (!engine.rows[0]?.is_running) return null;
+      const job = await client.query(
+        `select j.*,d.storage_path,d.file_name,d.mime_type
+         from ai_review_jobs j
+         join legal_requests lr on lr.id=j.request_id
+         join request_documents d on d.id=j.document_id
+         where j.status='queued' and d.mime_type='application/pdf' and ($1<>'Requester' or lr.requester_id=$2)
+         order by case lr.priority when 'Urgent' then 1 when 'High' then 2 when 'Medium' then 3 else 4 end,j.queue_order
+         for update skip locked limit 1`,
+        [req.user.role, req.user.id],
+      );
+      if (!job.rows[0]) return null;
+      await client.query(
+        `update ai_review_jobs
+         set status='processing',attempt_count=attempt_count+1,started_at=now(),locked_at=now(),completed_at=null,
+             current_step='Preparing isolated PDF review',
+             operational_trace=operational_trace || $1::jsonb
+         where id=$2`,
+        [JSON.stringify([{ at: new Date().toISOString(), step: "processing", message: "The server claimed this PDF for an isolated draft review." }]), job.rows[0].id],
+      );
+      return job.rows[0];
+    });
+
+    if (!claimedJob) return res.json({ processed: false, message: "No queued AI review jobs are available or the engine is stopped." });
+
+    const criteriaResult = await query("select id,criteria from legal_review_criteria order by sort_order");
+    const criteria = criteriaResult.rows.map((item) => item.criteria);
+    const review = await reviewLegalPdf(claimedJob, criteria, safeStoragePath(claimedJob.storage_path));
+    const criteriaByName = new Map(criteriaResult.rows.map((item) => [item.criteria.toLowerCase(), item.id]));
+
+    await transaction(async (client) => {
+      for (const criterion of criteria) {
+        const aiItem = review.review_checklist.find((item) => String(item?.criteria || "").toLowerCase() === criterion.toLowerCase());
+        await client.query(
+          `insert into request_checklist_items(request_id,document_id,criteria_id,page,checked,note)
+           values($1,$2,$3,$4,$5,$6)
+           on conflict(request_id,document_id,criteria_id) do update
+           set page=excluded.page,checked=excluded.checked,note=excluded.note`,
+          [claimedJob.request_id, claimedJob.document_id, criteriaByName.get(criterion.toLowerCase()), String(aiItem?.page || "N/A").slice(0, 50), Boolean(aiItem?.checked), String(aiItem?.note || "AI did not confirm this criterion. A Legal Reviewer must review it manually.").slice(0, 4000)],
+        );
+      }
+
+      await client.query("delete from document_ai_suggestions where document_id=$1", [claimedJob.document_id]);
+      const suggestions = [
+        ...review.risk_highlights.map((item) => ({ page: item?.page, type: `Risk: ${item?.risk_level || "review"}`, text: `${item?.term || "Term"}: ${item?.reason || "Review required"}` })),
+        ...review.missing_or_unusual_clauses.map((item) => ({ page: item?.page, type: `${item?.issue_type || "Review"} clause`, text: `${item?.clause_title || "Clause"}: ${item?.explanation || "Review required"}` })),
+      ].slice(0, 200);
+      for (const suggestion of suggestions) {
+        await client.query(
+          "insert into document_ai_suggestions(document_id,page,suggestion_type,suggestion_text) values($1,$2,$3,$4)",
+          [claimedJob.document_id, String(suggestion.page || "N/A").slice(0, 50), String(suggestion.type).slice(0, 200), String(suggestion.text).slice(0, 4000)],
+        );
+      }
+
+      await client.query(
+        `update legal_requests
+         set status=case when assigned_reviewer_id is null then 'AI Review Complete' else 'Assigned to Legal Reviewer' end,
+             risk_level=$1,ai_summary=$2,ai_review_result=$3::jsonb
+         where id=$4`,
+        [highestRiskLevel(review), review.draft_review_note, JSON.stringify(review), claimedJob.request_id],
+      );
+      await client.query(
+        `update ai_review_jobs
+         set status='completed',completed_at=now(),locked_at=null,current_step='Draft review completed',
+             operational_trace=operational_trace || $1::jsonb
+         where id=$2`,
+        [JSON.stringify([{ at: new Date().toISOString(), step: "completed", message: `${review.ai_mode} draft review saved; human assessment is required.` }]), claimedJob.id],
+      );
+      await client.query(
+        `insert into ai_engine_events(event_type,level,message,request_id,job_id,metadata)
+         values('job_processing_completed','status','AI draft review completed; human review required.',$1,$2,$3::jsonb)`,
+        [claimedJob.request_id, claimedJob.id, JSON.stringify({ aiMode: review.ai_mode })],
+      );
+    });
+
+    res.json({ processed: true, requestId: claimedJob.request_id, jobId: claimedJob.id, aiMode: review.ai_mode });
+  } catch (error) {
+    if (claimedJob) {
+      const message = error instanceof Error ? error.message : String(error);
+      await transaction(async (client) => {
+        await client.query(
+          `update ai_review_jobs
+           set status='failed',last_error=$1,completed_at=now(),locked_at=null,current_step='Draft review failed',
+               operational_trace=operational_trace || $2::jsonb
+           where id=$3`,
+          [message.slice(0, 4000), JSON.stringify([{ at: new Date().toISOString(), step: "failed", message: message.slice(0, 1000) }]), claimedJob.id],
+        );
+        await client.query("update legal_requests set status='AI Review Failed' where id=$1", [claimedJob.request_id]);
+        await client.query(
+          `insert into ai_engine_events(event_type,level,message,request_id,job_id,metadata)
+           values('job_processing_failed','error',$1,$2,$3,'{}')`,
+          [message.slice(0, 1000), claimedJob.request_id, claimedJob.id],
+        );
+      }).catch(() => {});
+    }
+    next(error);
+  }
+});
+
+router.post("/owner/reset-ai", requireRoles("Owner"), async (_req, res, next) => {
+  try {
+    const result = await transaction(async (client) => {
+      const updated = await client.query(`update legal_requests set ai_summary='AI legal review is pending.',ai_review_result=null,status='AI Review Pending' where id in(select request_id from request_documents where is_current=true and mime_type='application/pdf') returning id`);
+      await client.query(`update ai_review_jobs set status='queued',attempt_count=0,last_error=null,started_at=null,completed_at=null,current_step='Reset by Owner' where document_id in(select id from request_documents where is_current=true and mime_type='application/pdf')`);
+      return updated.rowCount;
+    });
+    res.json({ count: result });
+  } catch (error) { next(error); }
+});
+
+router.delete("/owner/closed", requireRoles("Owner"), async (_req, res, next) => {
+  try {
+    const documents = await query(`select d.storage_path from request_documents d join legal_requests lr on lr.id=d.request_id where lr.status='Closed'`);
+    const deleted = await query(`delete from legal_requests where status='Closed' returning id`);
+    await removeStoredFiles(documents.rows.map((row) => row.storage_path));
+    res.json({ count: deleted.rowCount });
+  } catch (error) { next(error); }
+});
+
+router.delete("/requests/:requestId", requireRoles("Owner"), async (req, res, next) => {
+  try {
+    const documents = await query("select storage_path from request_documents where request_id=$1", [req.params.requestId]);
+    const deleted = await query("delete from legal_requests where id=$1 returning id", [req.params.requestId]);
+    if (!deleted.rows[0]) return res.status(404).json({ error: "Request not found." });
+    await removeStoredFiles(documents.rows.map((row) => row.storage_path));
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+export default router;

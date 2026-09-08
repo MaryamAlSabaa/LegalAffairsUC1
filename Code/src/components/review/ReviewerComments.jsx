@@ -117,6 +117,6 @@ The workflow needs comments from multiple roles: requester, reviewer, legal mana
 2. Why show role beside the name?
 A comment from a requester means something different from a comment from Legal Affairs, so the role helps readers understand context.
 
-3. Why keep local state if comments are saved to Supabase?
+3. Why keep local state if comments are saved to PostgreSQL?
 Local state updates the screen immediately after saving, so the user sees their new comment without reloading the page.
 */

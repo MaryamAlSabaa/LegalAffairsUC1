@@ -1,0 +1,4 @@
+.env
+storage/pdfs/*
+!storage/pdfs/.gitkeep
+npm-debug.log*
