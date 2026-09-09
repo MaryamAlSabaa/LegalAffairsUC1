@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { isAvailableLegalReviewer } from "../../config/reviewTeam";
+import { getRequestStatusLabel } from "../../utils/requestStatus";
 
 function getPriorityStyle(priority) {
   if (priority === "Urgent") return "bg-red-100 text-red-700";
@@ -9,7 +11,7 @@ function getPriorityStyle(priority) {
 
 function getReviewerRequests(reviewer, requests) {
   return requests.filter(
-    (request) => request.assignedReviewer === reviewer.name,
+    (request) => (request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean)).includes(reviewer.id),
   );
 }
 
@@ -20,7 +22,7 @@ function LegalReviewers({
   onSelectRequest,
 }) {
   // selectedReviewerId controls which reviewer details appear on the right side.
-  const legalReviewers = users.filter((user) => user.role === "Legal Reviewer");
+  const legalReviewers = users.filter(isAvailableLegalReviewer);
   const [selectedReviewerId, setSelectedReviewerId] = useState(
     legalReviewers[0]?.id || "",
   );
@@ -31,6 +33,12 @@ function LegalReviewers({
   const selectedReviewerRequests = selectedReviewer
     ? getReviewerRequests(selectedReviewer, requests)
     : [];
+
+  useEffect(() => {
+    if (!legalReviewers.some((reviewer) => reviewer.id === selectedReviewerId)) {
+      setSelectedReviewerId(legalReviewers[0]?.id || "");
+    }
+  }, [legalReviewers, selectedReviewerId]);
 
   return (
     <section>
@@ -155,7 +163,7 @@ function LegalReviewers({
                         </th>
                         <th className="p-4 text-left font-semibold">Status</th>
                         <th className="p-4 text-left font-semibold">
-                          Reviewer
+                          Reviewers
                         </th>
                         <th className="p-4 text-left font-semibold">Action</th>
                       </tr>
@@ -209,7 +217,7 @@ function LegalReviewers({
                               </span>
                             </td>
                             <td className="p-4 text-slate-700">
-                              {request.status}
+                              {getRequestStatusLabel(request.status)}
                             </td>
                             <td className="p-4 text-slate-700">
                               {request.assignedReviewer}
@@ -253,5 +261,5 @@ Counts like Assigned, Reviewing, and High Risk are calculated from the request l
 It matches the Legal Requests page, so Legal Managers see requests in a familiar format.
 
 4. Is this reviewer assignment management?
-This page is workload monitoring. Assignment changes should still be handled by a dedicated backend workflow before production.
+This page is workload monitoring. Graham Cowan manages one-or-more reviewer assignments from each request's details page.
 */

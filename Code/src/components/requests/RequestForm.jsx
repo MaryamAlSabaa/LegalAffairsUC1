@@ -13,6 +13,8 @@ import Icon from "../common/Icon";
 function RequestForm({ onCreateRequest, currentUser }) {
   const [formData, setFormData] = useState({
     title: "",
+    partyName: "",
+    endUser: currentUser?.name || "",
     department: currentUser?.department || "Legal Affairs",
     categoryCode: "LEG-A",
     priority: "Medium",
@@ -81,6 +83,8 @@ function RequestForm({ onCreateRequest, currentUser }) {
     const isPdf = isPdfDocument(selectedFile);
     const newRequest = {
       title: formData.title || "Untitled Legal Request",
+      partyName: formData.partyName,
+      endUser: formData.endUser || currentUser?.name || "Current user",
       categoryCode: formData.categoryCode,
       categoryName: selectedCategory.name,
       department: formData.department,
@@ -104,7 +108,7 @@ function RequestForm({ onCreateRequest, currentUser }) {
 
     try {
       await onCreateRequest(newRequest);
-      setFormData({ title: "", department: currentUser?.department || "Legal Affairs", categoryCode: "LEG-A", priority: "Medium", deadline: "", description: "" });
+      setFormData({ title: "", partyName: "", endUser: currentUser?.name || "", department: currentUser?.department || "Legal Affairs", categoryCode: "LEG-A", priority: "Medium", deadline: "", description: "" });
       setSelectedFile(null);
       setFileError("");
       setAiStatusMessage("");
@@ -138,6 +142,8 @@ function RequestForm({ onCreateRequest, currentUser }) {
             <header><span><Icon name="file" size={19} /></span><div><h3>Matter information</h3><p>Tell us what you need Legal Affairs to review.</p></div></header>
             <div className="form-grid">
               <label className="field-group form-span-2"><span className="field-label">Request title <b>*</b></span><input className="field-control" value={formData.title} onChange={(event) => updateField("title", event.target.value)} placeholder="e.g. Review research collaboration agreement" required /></label>
+              <label className="field-group"><span className="field-label">Party name <b>*</b></span><input className="field-control" value={formData.partyName} onChange={(event) => updateField("partyName", event.target.value)} placeholder="External party or counterparty" required /></label>
+              <label className="field-group"><span className="field-label">End user <b>*</b></span><input className="field-control" value={formData.endUser} onChange={(event) => updateField("endUser", event.target.value)} placeholder="Business owner or end user" required /></label>
               <label className="field-group"><span className="field-label">Requesting department <b>*</b></span><select className="field-control" value={formData.department} onChange={(event) => updateField("department", event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</select></label>
               <label className="field-group"><span className="field-label">Legal category <b>*</b></span><select className="field-control" value={formData.categoryCode} onChange={(event) => updateField("categoryCode", event.target.value)}>{legalCategories.map((category) => <option key={category.code} value={category.code}>{category.code} · {category.name}</option>)}</select></label>
               <label className="field-group"><span className="field-label">Priority</span><select className="field-control" value={formData.priority} onChange={(event) => updateField("priority", event.target.value)}>{priorityLevels.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
@@ -164,6 +170,8 @@ function RequestForm({ onCreateRequest, currentUser }) {
           <div className="summary-heading"><p className="page-kicker">Submission summary</p><h3>Ready for intake</h3></div>
           <dl>
             <div><dt>Requester</dt><dd>{currentUser?.name || "Current user"}</dd></div>
+            <div><dt>Party</dt><dd>{formData.partyName || "Required"}</dd></div>
+            <div><dt>End user</dt><dd>{formData.endUser || "Required"}</dd></div>
             <div><dt>Department</dt><dd>{formData.department}</dd></div>
             <div><dt>Category</dt><dd>{selectedCategory?.name || "Not selected"}<small>{formData.categoryCode}</small></dd></div>
             <div><dt>Priority</dt><dd><span className={`priority-badge priority-${formData.priority.toLowerCase()}`}><i />{formData.priority}</span></dd></div>

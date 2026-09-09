@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import LoginPage from "./components/auth/LoginPage";
 import RegisterPage from "./components/auth/RegisterPage";
 import ForgotPasswordPage from "./components/auth/ForgotPasswordPage";
@@ -9,6 +9,7 @@ import DashboardCards from "./components/dashboard/DashboardCards";
 import RequestTable from "./components/requests/RequestTable";
 import RequestForm from "./components/requests/RequestForm";
 import RequestDetails from "./components/requests/RequestDetails";
+import ReviewerCoverageConfirmation from "./components/requests/ReviewerCoverageConfirmation";
 import AdminUsers from "./components/admin/AdminUsers";
 import LegalAffairEngine from "./components/admin/LegalAffairEngine";
 import OwnerControls from "./components/admin/OwnerControls";
@@ -26,7 +27,7 @@ import {
   resetPassword,
 } from "./services/authService";
 import {
-  assignReviewerAsManager,
+  assignReviewersAsManager,
   checkBackendConnection,
   createBackendAuditLog,
   createBackendDepartmentApproval,
@@ -44,10 +45,12 @@ import {
   fetchBackendAuditLogs,
   fetchBackendRequests,
   fetchBackendUsers,
-  fetchRequestOverview,
+  fetchNotifications,
   fetchLegalAffairEngineEvents,
   fetchLegalAffairEngineState,
   setLegalAffairEngineRunning,
+  markAllNotificationsRead,
+  markNotificationRead,
   updateAiReviewJobQueueOrder,
   updateBackendChecklistItem,
   updateBackendUserDepartment,
@@ -64,6 +67,28 @@ import {
   getSelectedVisibleRequest,
   getVisibleRequests,
 } from "./utils/requestFilters";
+import { canManageReviewerAssignments } from "./config/reviewTeam";
+
+const completedRequestStatuses = new Set(["Approved", "Closed", "Archived"]);
+
+function currentTrackerTimestamp() {
+  return new Date().toLocaleString("en-AE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function isDueSoonOrOverdue(request) {
+  if (!request.deadline || request.deadline === "No deadline selected" || completedRequestStatuses.has(request.status)) return false;
+  const deadline = new Date(`${request.deadline}T00:00:00`);
+  if (Number.isNaN(deadline.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.ceil((deadline.getTime() - today.getTime()) / 86_400_000) <= 7;
+}
 
 function describeAppError(value) {
   if (!value) return "Unknown error";
@@ -100,6 +125,35 @@ function describeAppError(value) {
   return String(value);
 }
 
+function matchesDashboardFilter(request, filter) {
+  if (!filter || filter === "all") return true;
+  if (filter === "pending") {
+    return !completedRequestStatuses.has(request.status);
+  }
+  if (filter === "under-review") {
+    return ![
+      "Closed",
+      "Archived",
+      "Approved",
+      "Waiting for More Information",
+    ].includes(request.status);
+  }
+  if (filter === "returned-to-requester") {
+    return request.status === "Waiting for More Information";
+  }
+  if (filter === "completed") {
+    return completedRequestStatuses.has(request.status);
+  }
+  if (filter === "due") {
+    return isDueSoonOrOverdue(request);
+  }
+  if (filter === "unassigned") {
+    const reviewerIds = request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean);
+    return reviewerIds.length === 0 && !completedRequestStatuses.has(request.status);
+  }
+  return true;
+}
+
 function App() {
   // isLoggedIn controls whether the user sees auth screens or the main platform.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -123,17 +177,21 @@ function App() {
 
   // These collections are loaded from the shared PostgreSQL server after login.
   const [requests, setRequests] = useState([]);
-  const [reviewerOverviewRequests, setReviewerOverviewRequests] = useState([]);
   const [users, setUsers] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [engineState, setEngineState] = useState(null);
   const [engineEvents, setEngineEvents] = useState([]);
   const [activeUserIds, setActiveUserIds] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [reviewerActionConfirmation, setReviewerActionConfirmation] = useState(null);
+  const reviewerActionConfirmationResolver = useRef(null);
 
   // selectedRequestId controls which request appears on the Request Details page.
   // It starts as null so users must open a request from a table before seeing details.
   const [selectedRequestId, setSelectedRequestId] = useState(null);
+  const [requestReturnPage, setRequestReturnPage] = useState(null);
   const [dashboardRequestFilter, setDashboardRequestFilter] = useState(null);
+  const [reviewerRequestScope, setReviewerRequestScope] = useState("all");
 
   // currentRole/currentDepartment come from the logged-in user's database profile.
   const [currentRole, setCurrentRole] = useState("Requester");
@@ -153,6 +211,8 @@ function App() {
   const accessibleNavigation =
     navigationByRole[currentRole] || navigationByRole.Requester;
   const accessiblePageIds = accessibleNavigation.map((item) => item.id);
+  const canOpenRequestDetails = ["Requester", "Owner", "Legal Reviewer", "Legal Manager", "Department Approver"].includes(currentRole);
+  const legalTrackerMode = ["Legal Reviewer", "Legal Manager"].includes(currentRole);
 
   // Requesters should see only their own requests. Legal roles can see all requests.
   const visibleRequests = getVisibleRequests({
@@ -166,30 +226,13 @@ function App() {
     selectedRequestId,
   });
   const hasSelectedVisibleRequest = Boolean(selectedRequest);
-  const dashboardFilteredRequests = visibleRequests.filter((request) => {
-    if (!dashboardRequestFilter || dashboardRequestFilter === "all") return true;
-    if (dashboardRequestFilter === "pending") {
-      return !["Closed", "Archived", "Approved"].includes(request.status);
-    }
-    if (dashboardRequestFilter === "under-review") {
-      return ![
-        "Closed",
-        "Archived",
-        "Approved",
-        "Waiting for More Information",
-      ].includes(request.status);
-    }
-    if (dashboardRequestFilter === "high-risk") return request.riskLevel === "High";
-    return true;
-  });
   const requesterCurrentRequests =
     currentRole === "Requester"
-      ? visibleRequests.filter((request) => request.status !== "Closed")
+      ? visibleRequests.filter((request) => !completedRequestStatuses.has(request.status))
       : [];
-  const requesterClosedRequests =
-    currentRole === "Requester"
-      ? visibleRequests.filter((request) => request.status === "Closed")
-      : [];
+  const completedVisibleRequests = visibleRequests.filter((request) =>
+    completedRequestStatuses.has(request.status),
+  );
   const managerReviewRequests =
     currentRole === "Legal Manager"
       ? requests.filter(
@@ -202,8 +245,7 @@ function App() {
     currentRole === "Legal Reviewer"
       ? requests.filter(
           (request) =>
-            request.assignedReviewerId === currentUser.id &&
-            request.status !== "Closed",
+            (request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean)).includes(currentUser.id),
         )
       : [];
   const departmentReviewRequests =
@@ -214,6 +256,19 @@ function App() {
             request.departmentDecision === "Pending Department Review",
         )
       : [];
+  const requestRegisterSource =
+    currentRole === "Requester"
+      ? requesterCurrentRequests
+      : currentRole === "Legal Reviewer" && reviewerRequestScope === "assigned"
+        ? reviewerReviewRequests
+        : visibleRequests;
+  const requestRegisterRequests = requestRegisterSource.filter((request) =>
+    matchesDashboardFilter(request, dashboardRequestFilter),
+  );
+  const overviewRequestTableEnabled = ["Legal Manager", "Owner"].includes(currentRole);
+  const overviewRequests = visibleRequests.filter((request) =>
+    matchesDashboardFilter(request, dashboardRequestFilter),
+  );
 
   const navigationItemsForSidebar = accessibleNavigation.map((item) => {
     if (item.id !== "details") return item;
@@ -251,6 +306,7 @@ function App() {
         setCurrentUser(sessionUser);
         setCurrentRole(sessionUser.role);
         setCurrentDepartment(sessionUser.department);
+        setReviewerRequestScope("all");
         setIsLoggedIn(true);
         setCurrentPage(
           navigationByRole[sessionUser.role]?.[0]?.id || "requests",
@@ -271,15 +327,19 @@ function App() {
 
   // When the selected role changes, move the user to the first page allowed for that role.
   useEffect(() => {
-    if (!accessiblePageIds.includes(currentPage)) {
+    const isRequestDrillDown = currentPage === "details"
+      && canOpenRequestDetails
+      && hasSelectedVisibleRequest;
+    if (!accessiblePageIds.includes(currentPage) && !isRequestDrillDown) {
       setCurrentPage(accessibleNavigation[0].id);
     }
-  }, [currentRole, currentPage, accessibleNavigation, accessiblePageIds]);
+  }, [currentRole, currentPage, accessibleNavigation, accessiblePageIds, canOpenRequestDetails, hasSelectedVisibleRequest]);
 
   // Changing role or department changes which requests are visible.
   // We clear the selected request so each role must intentionally open a row first.
   useEffect(() => {
     setSelectedRequestId(null);
+    setRequestReturnPage(null);
   }, [currentRole, currentDepartment]);
 
   // If someone reaches Request Details without an opened request, send them back
@@ -310,21 +370,21 @@ function App() {
 
     async function heartbeat() {
       await recordCurrentUserActivity().catch(() => {});
-      const refreshedUsers = await fetchBackendUsers().catch(() => []);
+      const [refreshedUsers, refreshedNotifications] = await Promise.all([
+        fetchBackendUsers().catch(() => []),
+        fetchNotifications().catch(() => null),
+      ]);
       if (refreshedUsers.length > 0) {
         setUsers(refreshedUsers);
         setActiveUserIds(refreshedUsers.filter((user) => user.isActive).map((user) => user.id));
       }
-      if (currentUser.role === "Legal Reviewer") {
-        const refreshedOverview = await fetchRequestOverview().catch(() => null);
-        if (refreshedOverview) setReviewerOverviewRequests(refreshedOverview);
-      }
+      if (refreshedNotifications) setNotifications(refreshedNotifications);
     }
 
     heartbeat();
     const intervalId = window.setInterval(heartbeat, 30_000);
     return () => window.clearInterval(intervalId);
-  }, [isLoggedIn, currentUser?.id]);
+  }, [isLoggedIn, currentUser?.id, currentUser?.role]);
 
   async function loadBackendData(userForAccess = currentUser) {
     const canReadEngineData = ["Admin User", "Owner"].includes(
@@ -337,14 +397,14 @@ function App() {
       backendAuditLogs,
       backendEngineState,
       backendEngineEvents,
-      backendRequestOverview,
+      backendNotifications,
     ] = await Promise.all([
       fetchBackendRequests(),
       fetchBackendUsers(),
       fetchBackendAuditLogs().catch(() => []),
       canReadEngineData ? fetchLegalAffairEngineState().catch(() => null) : null,
       canReadEngineData ? fetchLegalAffairEngineEvents().catch(() => []) : [],
-      userForAccess.role === "Legal Reviewer" ? fetchRequestOverview() : [],
+      fetchNotifications().catch(() => []),
     ]);
 
     setRequests(backendRequests);
@@ -352,7 +412,7 @@ function App() {
     setAuditLogs(backendAuditLogs);
     setEngineState(backendEngineState);
     setEngineEvents(backendEngineEvents);
-    setReviewerOverviewRequests(backendRequestOverview);
+    setNotifications(backendNotifications);
     setActiveUserIds([
       ...new Set([userForAccess.id, ...backendUsers.filter((user) => user.isActive).map((user) => user.id)]),
     ]);
@@ -406,6 +466,9 @@ function App() {
     setCurrentRole(user.role);
     setCurrentDepartment(user.department);
     setSelectedRequestId(null);
+    setRequestReturnPage(null);
+    setReviewerRequestScope("all");
+    setDashboardRequestFilter(null);
     setIsLoggedIn(true);
     setCurrentPage(navigationByRole[user.role]?.[0]?.id || "requests");
     await recordCurrentUserActivity().catch(() => {});
@@ -447,6 +510,7 @@ function App() {
     setIsLoggedIn(false);
     setAuthMode("login");
     setSelectedRequestId(null);
+    setRequestReturnPage(null);
     setBackendMessage("Password changed. All sessions were signed out; sign in again.");
   }
 
@@ -460,6 +524,30 @@ function App() {
     setIsLoggedIn(false);
     setAuthMode("login");
     setSelectedRequestId(null);
+    setRequestReturnPage(null);
+    setReviewerRequestScope("all");
+    setDashboardRequestFilter(null);
+    setNotifications([]);
+  }
+
+  async function handleMarkNotificationRead(notificationId) {
+    try {
+      await markNotificationRead(notificationId);
+      setNotifications((current) => current.map((notification) =>
+        notification.id === String(notificationId) ? { ...notification, isRead: true } : notification,
+      ));
+    } catch (error) {
+      setBackendMessage(`Could not mark the notification as read: ${describeAppError(error)}`);
+    }
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    try {
+      await markAllNotificationsRead();
+      setNotifications((current) => current.map((notification) => ({ ...notification, isRead: true })));
+    } catch (error) {
+      setBackendMessage(`Could not update notifications: ${describeAppError(error)}`);
+    }
   }
 
   async function addAuditLog(
@@ -633,7 +721,8 @@ function App() {
     await deleteRequestAsOwner(requestId);
     setRequests((currentRequests) => currentRequests.filter((request) => request.id !== requestId));
     setSelectedRequestId(null);
-    setCurrentPage("requests");
+    setCurrentPage(requestReturnPage && accessiblePageIds.includes(requestReturnPage) ? requestReturnPage : accessibleNavigation[0].id);
+    setRequestReturnPage(null);
   }
 
   async function handleQueuePositionChange(request, priorityRequests, nextPosition) {
@@ -672,8 +761,50 @@ function App() {
     await addAuditLog("Changed Legal Affair Engine queue position", currentUser.name);
   }
 
+  function confirmUnassignedReviewerAction(requestId, actionDescription) {
+    if (currentRole !== "Legal Reviewer") return true;
+    const request = requests.find((item) => item.id === requestId);
+    if (!request) return false;
+    const assignedReviewerIds = request.assignedReviewerIds?.length
+      ? request.assignedReviewerIds
+      : [request.assignedReviewerId].filter(Boolean);
+    if (assignedReviewerIds.includes(currentUser.id)) return true;
+
+    const reviewerNames = request.assignedReviewers?.length
+      ? request.assignedReviewers.map((reviewer) => reviewer.name)
+      : request.assignedReviewer && request.assignedReviewer.toLowerCase() !== "not assigned"
+        ? request.assignedReviewer.split(",").map((name) => name.trim()).filter(Boolean)
+        : [];
+    const recipients = [
+      request.assignedManager && request.assignedManager.toLowerCase() !== "not assigned"
+        ? { name: request.assignedManager, role: "Legal Manager" }
+        : null,
+      ...reviewerNames.map((name) => ({ name, role: "Assigned Legal Reviewer" })),
+    ].filter(Boolean);
+
+    return new Promise((resolve) => {
+      reviewerActionConfirmationResolver.current?.(false);
+      reviewerActionConfirmationResolver.current = resolve;
+      setReviewerActionConfirmation({
+        requestId: request.trackingNumber || request.id,
+        requestTitle: request.title,
+        actionDescription,
+        recipients: recipients.length ? recipients : [{ name: "Legal Affairs", role: "Assigned manager and reviewers" }],
+      });
+    });
+  }
+
+  function resolveReviewerActionConfirmation(shouldContinue) {
+    const resolve = reviewerActionConfirmationResolver.current;
+    reviewerActionConfirmationResolver.current = null;
+    setReviewerActionConfirmation(null);
+    resolve?.(shouldContinue);
+  }
+
   async function handleAddRequestComment(requestId, commentText) {
+    if (!await confirmUnassignedReviewerAction(requestId, "add this comment")) return false;
     await createBackendRequestComment({ requestId, currentUser, commentText });
+    const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
       currentRequests.map((request) => {
@@ -687,11 +818,17 @@ function App() {
               authorName: currentUser.name,
               authorRole: currentUser.role,
               text: commentText,
+              createdAt: actionAt,
             },
           ],
+          updatedAt: actionAt,
+          lastAction: "Comment added",
+          lastActionBy: currentUser.name,
+          lastActionAt: actionAt,
         };
       }),
     );
+    return true;
   }
 
   async function handleManagerDecision(requestId, decision) {
@@ -700,6 +837,7 @@ function App() {
       currentUser,
       decision,
     });
+    const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
       currentRequests.map((request) =>
@@ -708,6 +846,13 @@ function App() {
               ...request,
               managerDecision: savedDecision.managerDecision,
               status: savedDecision.status,
+              updatedAt: actionAt,
+              lastAction: decision,
+              lastActionBy: currentUser.name,
+              lastActionAt: actionAt,
+              legalDepartmentStatus: completedRequestStatuses.has(savedDecision.status) ? "C" : "O",
+              endUserStatus: completedRequestStatuses.has(savedDecision.status) ? "C" : "O",
+              completedAt: completedRequestStatuses.has(savedDecision.status) ? actionAt : request.completedAt,
             }
           : request,
       ),
@@ -718,31 +863,45 @@ function App() {
   }
 
 
-  async function handleManagerAssignReviewer(requestId, reviewerId) {
-    const assignment = await assignReviewerAsManager({ requestId, reviewerId });
+  async function handleManagerAssignReviewers(requestId, reviewerIds) {
+    const assignment = await assignReviewersAsManager({ requestId, reviewerIds });
+    const actionAt = currentTrackerTimestamp();
+    const assignmentAction = `Assigned reviewers: ${assignment.assignedReviewers.map((reviewer) => reviewer.name).join(", ")}`;
 
     setRequests((currentRequests) =>
       currentRequests.map((request) =>
         request.id === requestId
           ? {
               ...request,
-              assignedReviewer: assignment.reviewerName,
-              assignedReviewerId: assignment.reviewerId,
-              managerDecision: "Reviewer assigned by Legal Manager",
+              assignedReviewers: assignment.assignedReviewers,
+              assignedReviewerIds: assignment.assignedReviewerIds,
+              assignedReviewer: assignment.assignedReviewer,
+              assignedReviewerId: assignment.assignedReviewerId,
+              managerDecision: assignment.managerDecision,
               status: assignment.status,
+              updatedAt: actionAt,
+              lastAction: assignmentAction,
+              lastActionBy: currentUser.name,
+              lastActionAt: actionAt,
             }
           : request,
       ),
     );
 
     await addAuditLog(
-      `Assigned reviewer: ${assignment.reviewerName}`,
+      assignmentAction,
       currentUser.name,
       requestId,
     );
   }
 
   async function handleReviewerRoute(requestId, destination, commentText) {
+    const confirmationDestination = {
+      requester: "return this request to the requester",
+      legal_manager: "move this request to Legal Manager review",
+      department_approver: "move this request to Department Approver review",
+    }[destination] || "route this request";
+    if (!await confirmUnassignedReviewerAction(requestId, confirmationDestination)) return false;
     const routedRequest = await routeRequestAsReviewer({
       requestId,
       destination,
@@ -753,6 +912,8 @@ function App() {
       legal_manager: "Legal Manager",
       department_approver: "Department Approver",
     }[destination] || "workflow recipient";
+    const actionAt = currentTrackerTimestamp();
+    const routeAction = `Sent request to ${destinationLabel}: ${commentText}`;
 
     setRequests((currentRequests) =>
       currentRequests.map((request) =>
@@ -766,18 +927,26 @@ function App() {
                   authorName: currentUser.name,
                   authorRole: currentUser.role,
                   text: commentText,
+                  createdAt: actionAt,
                 },
               ],
+              updatedAt: actionAt,
+              lastAction: routeAction,
+              lastActionBy: currentUser.name,
+              lastActionAt: actionAt,
+              legalDepartmentStatus: "O",
+              endUserStatus: "O",
             }
           : request,
       ),
     );
 
     await addAuditLog(
-      `Sent request to ${destinationLabel}: ${commentText}`,
+      routeAction,
       currentUser.name,
       requestId,
     );
+    return true;
   }
 
   async function handleDepartmentApproval(requestId, decision, commentText) {
@@ -787,6 +956,7 @@ function App() {
       decision,
       commentText,
     });
+    const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
       currentRequests.map((request) =>
@@ -795,6 +965,13 @@ function App() {
               ...request,
               departmentDecision: savedDecision.departmentDecision,
               status: savedDecision.status,
+              updatedAt: actionAt,
+              lastAction: `${decision}${commentText ? `: ${commentText}` : ""}`,
+              lastActionBy: currentUser.name,
+              lastActionAt: actionAt,
+              legalDepartmentStatus: "O",
+              endUserStatus: "O",
+              completedAt: completedRequestStatuses.has(savedDecision.status) ? actionAt : request.completedAt,
             }
           : request,
       ),
@@ -811,6 +988,7 @@ function App() {
     criteria,
     checked,
   }) {
+    if (!await confirmUnassignedReviewerAction(requestId, `${checked ? "select" : "clear"} the checklist item “${criteria}”`)) return false;
     await updateBackendChecklistItem({ checklistItemId, checked });
 
     setRequests((currentRequests) =>
@@ -838,6 +1016,7 @@ function App() {
       currentUser.name,
       requestId,
     );
+    return true;
   }
 
   async function handleUpdateUserRole(userId, newRole) {
@@ -852,11 +1031,22 @@ function App() {
   }
 
   function handleSelectRequest(requestId) {
+    if (!canOpenRequestDetails) return;
+    if (currentPage !== "details") setRequestReturnPage(currentPage);
     setSelectedRequestId(requestId);
+    setCurrentPage("details");
+  }
 
-    if (accessiblePageIds.includes("details")) {
-      setCurrentPage("details");
-    }
+  function handleBackFromRequest() {
+    const fallbackPage = accessiblePageIds.includes("requests")
+      ? "requests"
+      : accessibleNavigation[0].id;
+    const destination = requestReturnPage && accessiblePageIds.includes(requestReturnPage)
+      ? requestReturnPage
+      : fallbackPage;
+    setCurrentPage(destination);
+    setSelectedRequestId(null);
+    setRequestReturnPage(null);
   }
 
   // If the user is not logged in, show Login or Register before showing the dashboard.
@@ -907,94 +1097,124 @@ function App() {
     );
   }
 
+  function handleNavigationChange(pageId) {
+    setDashboardRequestFilter(null);
+    if (currentRole === "Legal Reviewer" && pageId === "requests") {
+      setReviewerRequestScope("all");
+    }
+    setCurrentPage(pageId);
+  }
+
   function renderCurrentPage() {
     if (currentPage === "dashboard") {
+      const overviewFilterDescriptions = {
+        all: "Showing all submitted legal requests.",
+        "under-review": "Showing requests currently in progress.",
+        "returned-to-requester": "Showing requests returned to the requester for a response.",
+        due: "Showing open requests that are due within seven days or overdue.",
+        completed: "Showing approved, closed, and archived requests.",
+        unassigned: "Showing open requests that still need a reviewer assignment.",
+      };
       return (
-        <DashboardCards
-          requests={
-            currentRole === "Legal Reviewer" ? reviewerReviewRequests : visibleRequests
-          }
-          onSelectFilter={(filter) => {
-            setDashboardRequestFilter(filter);
-            setCurrentPage(
-              currentRole === "Legal Reviewer"
-                ? "reviewer-review-queue"
-                : "requests",
-            );
-          }}
-          currentUser={currentUser}
-          allRequests={
-            currentRole === "Legal Reviewer" ? reviewerOverviewRequests : visibleRequests
-          }
-          onSelectRequest={handleSelectRequest}
-        />
+        <div className="overview-dashboard">
+          <DashboardCards
+            requests={
+              currentRole === "Legal Reviewer" ? reviewerReviewRequests : visibleRequests
+            }
+            onSelectFilter={(filter) => {
+              setDashboardRequestFilter(filter);
+              if (!overviewRequestTableEnabled) {
+                if (currentRole === "Legal Reviewer") {
+                  setReviewerRequestScope("assigned");
+                }
+                setCurrentPage(currentRole === "Requester" && filter === "completed" ? "completed-requests" : "requests");
+              }
+            }}
+            activeFilter={dashboardRequestFilter || "all"}
+            currentUser={currentUser}
+            allRequests={visibleRequests}
+            onSelectRequest={handleSelectRequest}
+            notifications={notifications}
+            onMarkNotificationRead={handleMarkNotificationRead}
+          />
+          {overviewRequestTableEnabled && (
+            <div className="overview-request-register">
+              <RequestTable
+                requests={overviewRequests}
+                onSelectRequest={handleSelectRequest}
+                canOpenDetails={canOpenRequestDetails}
+                currentUserId={currentUser.id}
+                kicker="Executive request register"
+                title="All Legal Requests"
+                description={overviewFilterDescriptions[dashboardRequestFilter || "all"]}
+                legalTrackerMode={legalTrackerMode}
+              />
+            </div>
+          )}
+        </div>
       );
     }
 
     if (currentPage === "requests") {
       return (
         <RequestTable
-          requests={
-            currentRole === "Legal Reviewer"
-              ? reviewerReviewRequests
-              : dashboardRequestFilter
-                ? dashboardFilteredRequests
-                : currentRole === "Requester"
-                  ? requesterCurrentRequests
-                  : visibleRequests
-          }
+          requests={requestRegisterRequests}
           onSelectRequest={handleSelectRequest}
-          canOpenDetails={accessiblePageIds.includes("details")}
+          canOpenDetails={canOpenRequestDetails}
+          currentUserId={currentUser.id}
           title={
             currentRole === "Requester"
               ? "My Current Requests"
+              : dashboardRequestFilter === "under-review"
+                ? "Requests in Progress"
+                : dashboardRequestFilter === "returned-to-requester"
+                  ? "Returned to Requester"
+                  : dashboardRequestFilter === "completed"
+                    ? "Completed Requests"
               : currentRole === "Legal Reviewer"
-                ? "Requests Assigned to You"
-                : dashboardRequestFilter === "all"
-                ? "Global Requests"
-                : dashboardRequestFilter === "pending"
-                  ? "Pending Requests"
-                  : dashboardRequestFilter === "under-review"
-                    ? "Requests Under Review"
-                    : dashboardRequestFilter === "high-risk"
-                      ? "High Risk Requests"
-              : currentRole === "Department Approver"
+                ? reviewerRequestScope === "assigned" ? "My Assigned Requests" : "All Legal Requests"
+                : currentRole === "Department Approver"
                 ? `Department Legal Requests for ${currentDepartment}`
                 : "Legal Requests"
           }
           description={
             currentRole === "Requester"
-              ? "View your active submitted requests. Closed requests are kept in My Closed Requests."
+              ? "View your active submitted requests. Completed requests are kept in Completed Requests."
               : currentRole === "Legal Reviewer"
-                ? "Requests assigned to you for Legal Reviewer action. Closed requests are excluded."
+                ? reviewerRequestScope === "assigned"
+                  ? `Showing the ${reviewerReviewRequests.length} requests assigned to you out of ${visibleRequests.length} submitted requests.`
+                  : "Search, open, and follow up on the complete Legal Affairs request portfolio, including requests assigned to other reviewers."
                 : currentRole === "Department Approver"
                 ? `Review legal requests for your current department: ${currentDepartment}.`
                 : "Track request category, department, priority, reviewer, deadline, and status."
           }
+          tabs={currentRole === "Legal Reviewer" ? [
+            { id: "assigned", label: "My assigned requests only", count: reviewerReviewRequests.length },
+            { id: "all", label: "All requests", count: visibleRequests.length },
+          ] : []}
+          activeTab={reviewerRequestScope}
+          onTabChange={(scope) => {
+            setReviewerRequestScope(scope);
+            setDashboardRequestFilter(null);
+          }}
+          legalTrackerMode={legalTrackerMode}
         />
       );
     }
 
-    if (currentPage === "closed-requests") {
+    if (currentPage === "completed-requests") {
       return (
         <RequestTable
-          requests={requesterClosedRequests}
+          requests={completedVisibleRequests}
           onSelectRequest={handleSelectRequest}
           canOpenDetails={true}
-          title="My Closed Requests"
-          description="Closed requests you submitted are retained here for reference."
-        />
-      );
-    }
-
-    if (currentPage === "reviewer-review-queue") {
-      return (
-        <RequestTable
-          requests={reviewerReviewRequests}
-          onSelectRequest={handleSelectRequest}
-          canOpenDetails={true}
-          title="Requests Assigned to You"
-          description="Requests assigned to you for Legal Reviewer action. Closed requests are excluded."
+          currentUserId={currentUser.id}
+          kicker="Completed request archive"
+          title={currentRole === "Requester" ? "My Completed Requests" : "Completed Legal Requests"}
+          description={currentRole === "Requester"
+            ? "Your approved, closed, and archived requests are retained here for reference."
+            : "Approved, closed, and archived requests are available here for quick access."}
+          legalTrackerMode={legalTrackerMode}
         />
       );
     }
@@ -1005,8 +1225,10 @@ function App() {
           requests={managerReviewRequests}
           onSelectRequest={handleSelectRequest}
           canOpenDetails={true}
+          currentUserId={currentUser.id}
           title="My Manager Review Queue"
           description="Requests routed to you by Legal Reviewers and awaiting your Legal Manager decision."
+          legalTrackerMode={legalTrackerMode}
         />
       );
     }
@@ -1017,8 +1239,10 @@ function App() {
           requests={departmentReviewRequests}
           onSelectRequest={handleSelectRequest}
           canOpenDetails={true}
+          currentUserId={currentUser.id}
           title="My Department Review Queue"
           description="Requests routed to you for a Department Approver decision."
+          legalTrackerMode={legalTrackerMode}
         />
       );
     }
@@ -1036,10 +1260,12 @@ function App() {
       return (
         <RequestDetails
           request={selectedRequest}
+          onBack={handleBackFromRequest}
           currentUser={currentUser}
           canManageReview={canManageReview(currentRole)}
           canManageManagerActions={canManageManagerActions(currentRole)}
           canManageDepartmentApproval={canManageDepartmentApproval(currentRole)}
+          canAssignReviewers={canManageReviewerAssignments(currentUser)}
           onAddComment={(commentText) =>
             handleAddRequestComment(selectedRequest.id, commentText)
           }
@@ -1051,8 +1277,8 @@ function App() {
           }
           onChecklistItemToggle={handleChecklistItemToggle}
           users={users}
-          onAssignReviewer={(reviewerId) =>
-            handleManagerAssignReviewer(selectedRequest.id, reviewerId)
+          onAssignReviewers={(reviewerIds) =>
+            handleManagerAssignReviewers(selectedRequest.id, reviewerIds)
           }
           onRouteRequest={(destination, commentText) =>
             handleReviewerRoute(selectedRequest.id, destination, commentText)
@@ -1129,7 +1355,7 @@ function App() {
     <div className="app-shell">
       <Sidebar
         currentPage={currentPage}
-        onChangePage={setCurrentPage}
+        onChangePage={handleNavigationChange}
         navigationItems={navigationItemsForSidebar}
         currentUser={currentUser}
       />
@@ -1138,6 +1364,11 @@ function App() {
         <Header
           currentUser={currentUser}
           currentPage={currentPage}
+          requests={visibleRequests}
+          notifications={notifications}
+          onMarkNotificationRead={handleMarkNotificationRead}
+          onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+          onSelectRequest={handleSelectRequest}
           onLogout={handleLogout}
           onChangePassword={handleChangePassword}
           theme={theme}
@@ -1154,6 +1385,13 @@ function App() {
           {renderCurrentPage()}
         </main>
       </div>
+      {reviewerActionConfirmation && (
+        <ReviewerCoverageConfirmation
+          confirmation={reviewerActionConfirmation}
+          onCancel={() => resolveReviewerActionConfirmation(false)}
+          onConfirm={() => resolveReviewerActionConfirmation(true)}
+        />
+      )}
     </div>
   );
 }

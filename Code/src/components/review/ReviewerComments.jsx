@@ -24,7 +24,8 @@ function RequestComments({ initialComments, currentUser, onAddComment }) {
 
     try {
       if (onAddComment) {
-        await onAddComment(commentToAdd.text);
+        const saved = await onAddComment(commentToAdd.text);
+        if (saved === false) return;
       }
 
       setComments([...comments, commentToAdd]);

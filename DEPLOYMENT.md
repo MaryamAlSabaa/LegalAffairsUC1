@@ -107,7 +107,7 @@ Run the API as a managed Windows service under a dedicated, least-privilege serv
 
 ## 5. Shared document storage
 
-Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the host configured by `PDF_STORAGE_PATH`, with metadata and a SHA-256 digest in PostgreSQL. Users receive documents only through an authenticated API endpoint after a role/assignment check. PDFs can open in the review workspace; Office documents are downloaded for manual review.
+Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the host configured by `PDF_STORAGE_PATH`, with metadata and a SHA-256 digest in PostgreSQL. Users receive documents only through an authenticated API endpoint after a role/access-scope check. Legal Reviewers have global portfolio access for colleague coverage; requester and department access remains scoped. PDFs can open in the review workspace; Office documents are downloaded for manual review.
 
 For production, point `PDF_STORAGE_PATH` to a dedicated encrypted volume or a service-account-protected network share. The account running the Node server needs read/write access; ordinary users do not. Do not place uploaded documents in `Code/public` or OneDrive-synced frontend assets.
 

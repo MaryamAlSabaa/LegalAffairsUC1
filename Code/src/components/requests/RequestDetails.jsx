@@ -10,13 +10,13 @@ import PdfReviewModal from "./PdfReviewModal";
 import RequestPdfResubmissionPanel from "./RequestPdfResubmissionPanel";
 import Icon from "../common/Icon";
 import { getDocumentTypeLabel, isPdfDocument } from "../../utils/documentTypes";
+import { isAvailableLegalReviewer } from "../../config/reviewTeam";
+import { getLegalTrackerRecord } from "../../utils/legalTracker";
+import { getRequestStatusLabel } from "../../utils/requestStatus";
 
 function ReviewStatusCard({
   request,
   document,
-  canManageReview,
-  canManageManagerActions,
-  canManageDepartmentApproval,
   showChecklistProgress,
 }) {
   const checklistItems = document?.checklist || [];
@@ -36,7 +36,7 @@ function ReviewStatusCard({
       <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
         <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
           <p className="text-slate-500">Current Request Status</p>
-          <p className="mt-1 font-bold text-slate-900">{request.status}</p>
+          <p className="mt-1 font-bold text-slate-900">{getRequestStatusLabel(request.status)}</p>
         </div>
         {request.aiReviewJob &&
           request.aiReviewJob.status !== "completed" &&
@@ -53,7 +53,7 @@ function ReviewStatusCard({
             </div>
           )}
         <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-          <p className="text-slate-500">Legal Reviewer</p>
+          <p className="text-slate-500">Legal Reviewers</p>
           <p className="mt-1 font-bold text-slate-900">
             {request.assignedReviewer || "Not assigned"}
           </p>
@@ -82,19 +82,125 @@ function ReviewStatusCard({
           <p className="text-slate-500">Legal Manager Review</p>
           <p className="mt-1 font-bold text-slate-900">{managerDecision}</p>
         </div>
-        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-          <p className="text-slate-500">Your Access on This Page</p>
-          <p className="mt-1 font-bold text-slate-900">
-            {canManageReview
-              ? "Legal Reviewer actions enabled"
-              : canManageManagerActions
-                ? "Legal Manager actions enabled"
-                : canManageDepartmentApproval
-                  ? "Department actions enabled"
-                  : "View-only"}
-          </p>
-        </div>
       </div>
+    </div>
+  );
+}
+
+function LegalTrackerDetails({ request }) {
+  const tracker = getLegalTrackerRecord(request);
+  const fields = [
+    ["Date Received", tracker.dateReceived],
+    ["Deadline", tracker.deadline],
+    ["Party Name", tracker.partyName],
+    ["End User", tracker.endUser],
+    ["Matter Type", tracker.matterType],
+    ["Responsible Lawyer (reviewer)", tracker.responsibleLawyer],
+    ["Comments / Notes", tracker.commentsNotes, true],
+    ["Last Update / Actions Taken", tracker.lastUpdateActionsTaken, true],
+    ["Legal Department Status (C/O)", tracker.legalDepartmentStatus],
+    ["End User Status (C/O)", tracker.endUserStatus],
+    ["Date of Completion / AnaSign Signature", tracker.completionAnaSign, true],
+  ];
+
+  return (
+    <div className="matter-overview-card legal-tracker-details">
+      <div className="legal-tracker-heading">
+        <div>
+          <p className="page-kicker">Legal request register</p>
+          <h3>Legal Tracker Information</h3>
+        </div>
+        <span>C = Closed · O = Open</span>
+      </div>
+      <div className="legal-tracker-grid">
+        {fields.map(([label, value, isWide]) => (
+          <div className={`legal-tracker-field ${isWide ? "legal-tracker-field-wide" : ""}`} key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReviewerAssignmentModal({ request, reviewers, onAssignReviewers, onClose }) {
+  const availableReviewerIds = new Set(reviewers.map((reviewer) => reviewer.id));
+  const [selectedReviewerIds, setSelectedReviewerIds] = useState(() =>
+    (request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean))
+      .filter((reviewerId) => availableReviewerIds.has(reviewerId)),
+  );
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === "Escape" && !isSaving) onClose();
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [isSaving, onClose]);
+
+  function toggleReviewer(reviewerId) {
+    setSelectedReviewerIds((current) =>
+      current.includes(reviewerId)
+        ? current.filter((id) => id !== reviewerId)
+        : [...current, reviewerId],
+    );
+  }
+
+  async function saveAssignments() {
+    if (selectedReviewerIds.length === 0 || isSaving) {
+      setErrorMessage("Select at least one Legal Reviewer.");
+      return;
+    }
+
+    setIsSaving(true);
+    setErrorMessage("");
+    try {
+      await onAssignReviewers(selectedReviewerIds);
+      onClose();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not save reviewer assignments.");
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isSaving && onClose()}>
+      <section className="reviewer-assignment-modal" role="dialog" aria-modal="true" aria-labelledby="reviewer-assignment-title">
+        <header className="reviewer-assignment-header">
+          <div>
+            <p className="page-kicker">Manager assignment</p>
+            <h2 id="reviewer-assignment-title">Assign reviewers</h2>
+            <p>Select one or more reviewers for <strong>{request.trackingNumber || request.id}</strong>.</p>
+          </div>
+          <button type="button" className="dashboard-modal-close" disabled={isSaving} onClick={onClose} aria-label="Close reviewer assignment">&times;</button>
+        </header>
+
+        <div className="reviewer-assignment-options">
+          {reviewers.map((reviewer) => {
+            const isSelected = selectedReviewerIds.includes(reviewer.id);
+            return (
+              <label key={reviewer.id} className={`reviewer-assignment-option ${isSelected ? "is-selected" : ""}`}>
+                <input type="checkbox" checked={isSelected} disabled={isSaving} onChange={() => toggleReviewer(reviewer.id)} />
+                <span className="reviewer-option-avatar">{reviewer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
+                <span><strong>{reviewer.name}</strong><small>{reviewer.email}</small></span>
+              </label>
+            );
+          })}
+          {reviewers.length === 0 && <p className="reviewer-assignment-empty">No approved Legal Reviewers are currently available.</p>}
+        </div>
+
+        {errorMessage && <p className="reviewer-assignment-error">{errorMessage}</p>}
+        <footer className="reviewer-assignment-footer">
+          <span>{selectedReviewerIds.length} reviewer{selectedReviewerIds.length === 1 ? "" : "s"} selected</span>
+          <div>
+            <button type="button" className="button-secondary" disabled={isSaving} onClick={onClose}>Cancel</button>
+            <button type="button" className="button-primary" disabled={isSaving || selectedReviewerIds.length === 0} onClick={saveAssignments}>{isSaving ? "Saving…" : "Save assignment"}</button>
+          </div>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -103,22 +209,25 @@ function ReviewStatusCard({
 
 function RequestDetails({
   request,
+  onBack,
   currentUser,
   canManageReview,
   canManageManagerActions,
   canManageDepartmentApproval,
+  canAssignReviewers,
   onAddComment,
   onManagerDecisionChange,
   onDepartmentDecisionChange,
   onChecklistItemToggle,
   users,
-  onAssignReviewer,
+  onAssignReviewers,
   onRouteRequest,
   onDeleteRequest,
   onUpdateDocuments,
 }) {
   // selectedDocument stores the PDF the user clicked, so we can show it in the popup.
   const [selectedDocument, setSelectedDocument] = useState(null);
+  const [showReviewerAssignment, setShowReviewerAssignment] = useState(false);
 
   // These two pieces of state make the status card update immediately after workflow saves.
   const [managerDecision, setManagerDecision] = useState(
@@ -152,21 +261,28 @@ function RequestDetails({
 
   const firstDocument = request.documents[0];
   const isRequester = currentUser?.role === "Requester";
-  const departmentReviewers = users.filter(
-    (user) =>
-      user.role === "Legal Reviewer" &&
-      user.department === currentUser?.department,
-  );
+  const availableReviewers = users.filter(isAvailableLegalReviewer);
+  const assignedReviewerCount = (request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean)).length;
 
   return (
     <section>
       <div className="page-heading">
         <div>
+          <button type="button" className="request-details-back" onClick={onBack}><Icon name="arrowLeft" size={16} /> Back to requests</button>
           <p className="page-kicker">Matter workspace</p>
           <h2>Request details</h2>
           <p>Review the source record, document analysis, decisions, and assigned actions.</p>
         </div>
-        <div className="matter-reference"><span>{request.trackingNumber || request.id}</span><small>Tracking number · Confidential matter</small></div>
+        <div className="request-heading-actions">
+          {canAssignReviewers && (
+            <button type="button" className="quick-reviewer-assignment" onClick={() => setShowReviewerAssignment(true)}>
+              <span><Icon name="users" size={18} /></span>
+              <div><strong>Assign reviewers</strong><small>{assignedReviewerCount ? `${assignedReviewerCount} currently assigned` : "No reviewer assigned"}</small></div>
+              <Icon name="chevronRight" size={16} />
+            </button>
+          )}
+          <div className="matter-reference"><span>{request.trackingNumber || request.id}</span><small>Tracking number · Confidential matter</small></div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -182,7 +298,7 @@ function RequestDetails({
               </div>
               <div className="flex items-center gap-2">
                 <span className="status-badge status-info">
-                  {request.status}
+                  {getRequestStatusLabel(request.status)}
                 </span>
                 {onDeleteRequest && (
                   <button
@@ -212,8 +328,8 @@ function RequestDetails({
                 {request.requester}
               </p>
               <p>
-                <span className="font-semibold">Assigned Reviewer:</span>{" "}
-                {request.assignedReviewer}
+                <span className="font-semibold">Assigned Reviewers:</span>{" "}
+                {request.assignedReviewer || "Not assigned"}
               </p>
               <p>
                 <span className="font-semibold">Priority:</span>{" "}
@@ -271,6 +387,7 @@ function RequestDetails({
             </div>
           </div>
 
+          <LegalTrackerDetails request={request} />
 
           {isRequester && request.status === "Waiting for More Information" && (
             <RequestPdfResubmissionPanel
@@ -289,25 +406,19 @@ function RequestDetails({
           <ReviewStatusCard
             request={{ ...request, managerDecision, departmentDecision }}
             document={firstDocument}
-            canManageReview={canManageReview}
-            canManageManagerActions={canManageManagerActions}
-            canManageDepartmentApproval={canManageDepartmentApproval}
             showChecklistProgress={!isRequester}
           />
           {canManageManagerActions && (
             <ManagerActions
               request={request}
               canManageManagerActions={canManageManagerActions}
-              reviewers={departmentReviewers}
-              onAssignReviewer={onAssignReviewer}
               onManagerDecisionChange={async (nextDecision) => {
                 const savedDecision = await onManagerDecisionChange(nextDecision);
                 setManagerDecision(savedDecision.managerDecision);
               }}
             />
           )}
-          {canManageReview &&
-            (request.assignedReviewer === currentUser.name || currentUser?.role === "Owner") && (
+          {canManageReview && (
             <ReviewerRoutingPanel
               request={request}
               canRouteRequest
@@ -349,6 +460,14 @@ function RequestDetails({
         <PdfReviewModal
           document={selectedDocument}
           onClose={() => setSelectedDocument(null)}
+        />
+      )}
+      {showReviewerAssignment && (
+        <ReviewerAssignmentModal
+          request={request}
+          reviewers={availableReviewers}
+          onAssignReviewers={onAssignReviewers}
+          onClose={() => setShowReviewerAssignment(false)}
         />
       )}
 

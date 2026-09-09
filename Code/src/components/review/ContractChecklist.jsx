@@ -59,13 +59,14 @@ function ContractChecklist({
     setErrorMessage("");
 
     try {
-      await onChecklistItemToggle({
+      const saved = await onChecklistItemToggle({
         requestId,
         documentId: document.id,
         checklistItemId: item.id,
         criteria: item.criteria,
         checked: nextChecked,
       });
+      if (saved === false) setCheckedCriteria(previousCheckedCriteria);
     } catch (error) {
       setCheckedCriteria(previousCheckedCriteria);
       setErrorMessage(
@@ -79,7 +80,7 @@ function ContractChecklist({
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-5">
+    <div className="contract-checklist-panel bg-white border border-slate-200 rounded-2xl p-5">
       <h3 className="font-bold text-slate-900">Contract Review Checklist</h3>
       <p className="text-sm text-slate-500 mt-1">
         AI pre-selects criteria based on the PDF. Legal reviewers can adjust the
@@ -99,7 +100,7 @@ function ContractChecklist({
         </div>
       )}
 
-      <div className="mt-4 space-y-3">
+      <div className="contract-checklist-scroll mt-4 space-y-3">
         {checklistItems.map((item) => {
           const isChecked = checkedCriteria.includes(item.criteria);
 

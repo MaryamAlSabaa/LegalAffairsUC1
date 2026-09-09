@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { query, transaction } from "../db.js";
 import { mapUser, requireAuth, requireRoles } from "../middleware/auth.js";
 import { highestRiskLevel, reviewLegalPdf } from "../services/aiReviewService.js";
+import { createNotifications, mapNotification, notifyRequestActivity } from "../services/notificationService.js";
 import { canAccessRequest, getDocumentForUser, listRequestOverview, listRequests } from "../services/requestService.js";
 
 const router = Router();
@@ -107,6 +108,22 @@ const managerDecisions = new Set([
   "Reviewer Assignment Started",
 ]);
 const departmentDecisions = new Set(["Department Approved", "Department Requested Revision"]);
+const reviewAssignmentManagerEmail = "graham.cowan@ku.ac.ae";
+const demoReviewAssignmentManagerEmail = "manager@demo.test";
+const reviewAssignmentManagerEmails = [reviewAssignmentManagerEmail, demoReviewAssignmentManagerEmail];
+const availableReviewerEmails = [
+  "omar.elkayal@ku.ac.ae",
+  "khalid.malali@ku.ac.ae",
+  "antigoni.filippopoulou@ku.ac.ae",
+  "mohamed.almaazmi@ku.ac.ae",
+];
+
+function requireReviewAssignmentManager(req, res, next) {
+  if (req.user?.role !== "Legal Manager" || !reviewAssignmentManagerEmails.includes(req.user.email?.toLowerCase())) {
+    return res.status(403).json({ error: "Only the designated Legal Manager can manage Legal Reviewer assignments." });
+  }
+  next();
+}
 
 router.use(requireAuth);
 
@@ -115,6 +132,37 @@ router.get("/health/private", (_req, res) => res.json({ ok: true }));
 router.post("/activity", async (req, res, next) => {
   try {
     await query("update users set last_seen_at = now() where id = $1", [req.user.id]);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.get("/notifications", async (req, res, next) => {
+  try {
+    const result = await query(
+      `select id,request_id,notification_type,title,message,is_read,created_at
+       from notifications where recipient_id=$1
+       order by created_at desc limit 100`,
+      [req.user.id],
+    );
+    res.json(result.rows.map(mapNotification));
+  } catch (error) { next(error); }
+});
+
+router.patch("/notifications/:notificationId/read", async (req, res, next) => {
+  try {
+    if (!/^\d+$/.test(req.params.notificationId)) return res.status(400).json({ error: "Invalid notification identifier." });
+    const result = await query(
+      "update notifications set is_read=true where id=$1 and recipient_id=$2 returning id",
+      [req.params.notificationId, req.user.id],
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: "Notification not found." });
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+router.post("/notifications/read-all", async (req, res, next) => {
+  try {
+    await query("update notifications set is_read=true where recipient_id=$1 and is_read=false", [req.user.id]);
     res.status(204).end();
   } catch (error) { next(error); }
 });
@@ -187,7 +235,7 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
   try {
     assertSupportedDocument(req.file);
     const data = parseJson(req.body.metadata);
-    if (!String(data.title || "").trim() || !String(data.description || "").trim()) return res.status(400).json({ error: "Title and description are required." });
+    if (!String(data.title || "").trim() || !String(data.description || "").trim() || !String(data.partyName || "").trim()) return res.status(400).json({ error: "Title, party name, and description are required." });
     if (!['Low', 'Medium', 'High', 'Urgent'].includes(data.priority)) return res.status(400).json({ error: "Invalid priority." });
 
     const sequence = await query("select nextval('legal_request_number_seq') as number");
@@ -199,24 +247,19 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
       // queries sequentially instead of overlapping operations on that client.
       const department = await client.query("select id from departments where name = $1", [data.department]);
       const category = await client.query("select code from legal_categories where code = $1", [data.categoryCode]);
-      const reviewer = await client.query(`select u.id from users u join roles r on r.id = u.role_id left join legal_requests lr on lr.assigned_reviewer_id = u.id and lr.status not in ('Closed','Archived','Approved') where r.id = 'legal_reviewer' and u.status = 'Active' group by u.id order by count(lr.id), u.last_seen_at desc nulls last limit 1`);
-      const manager = await client.query(`select u.id from users u join roles r on r.id = u.role_id where r.id = 'legal_manager' and u.status = 'Active' order by u.last_seen_at desc nulls last limit 1`);
+      const manager = await client.query(`select u.id from users u join roles r on r.id = u.role_id where r.id = 'legal_manager' and lower(u.email) = $1 and u.status = 'Active' limit 1`, [reviewAssignmentManagerEmail]);
       const approver = await client.query(`select u.id from users u join roles r on r.id = u.role_id join departments d on d.id = u.department_id where r.id = 'department_approver' and d.name = $1 and u.status = 'Active' order by u.last_seen_at desc nulls last limit 1`, [data.department]);
       if (!department.rows[0] || !category.rows[0]) throw Object.assign(new Error("Department or legal category was not found."), { status: 400 });
 
-      const initialStatus = savedFile.isPdf
-        ? "AI Review Pending"
-        : reviewer.rows[0]?.id
-          ? "Assigned to Legal Reviewer"
-          : "New";
+      const initialStatus = savedFile.isPdf ? "AI Review Pending" : "New";
       const initialSummary = savedFile.isPdf
         ? data.aiSummary || "AI legal review is pending."
         : "Office document secured for manual Legal Affairs review. Automated page-level analysis is available for PDF documents only.";
 
       await client.query(
-        `insert into legal_requests (id, title, description, requester_id, department_id, category_code, assigned_reviewer_id, assigned_manager_id, assigned_department_approver_id, priority, risk_level, status, deadline, ai_summary)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [requestId, data.title.trim(), data.description.trim(), req.user.id, department.rows[0].id, data.categoryCode, reviewer.rows[0]?.id || null, manager.rows[0]?.id || null, approver.rows[0]?.id || null, data.priority, data.riskLevel || "Not Classified", initialStatus, data.deadline && data.deadline !== "No deadline selected" ? data.deadline : null, initialSummary],
+        `insert into legal_requests (id, title, description, party_name, end_user_name, requester_id, department_id, category_code, assigned_manager_id, assigned_department_approver_id, priority, risk_level, status, deadline, ai_summary)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [requestId, data.title.trim(), data.description.trim(), data.partyName.trim(), String(data.endUser || req.user.name).trim(), req.user.id, department.rows[0].id, data.categoryCode, manager.rows[0]?.id || null, approver.rows[0]?.id || null, data.priority, data.riskLevel || "Not Classified", initialStatus, data.deadline && data.deadline !== "No deadline selected" ? data.deadline : null, initialSummary],
       );
       const document = await client.query(
         `insert into request_documents (request_id, file_name, mime_type, storage_path, size_bytes, sha256) values ($1,$2,$3,$4,$5,$6) returning id`,
@@ -240,6 +283,15 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
         "insert into audit_logs (request_id, action, actor_id, actor_name, ip_address) values ($1,$2,$3,$4,$5)",
         [requestId, savedFile.isPdf ? "Request submitted; PDF review queued" : "Request submitted; Office document secured for manual review", req.user.id, req.user.name, req.ip],
       );
+      if (manager.rows[0]?.id) {
+        await createNotifications(client, [{
+          recipientId: manager.rows[0].id,
+          requestId,
+          type: "new_request",
+          title: `New request awaiting assignment: ${requestId}`,
+          message: `${req.user.name} submitted ${requestId}: ${data.title.trim()}.`,
+        }]);
+      }
     });
 
     const created = (await listRequests(req.user)).find((request) => request.id === requestId);
@@ -320,11 +372,25 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
               previous_ai_summary=ai_summary,previous_ai_review_result=ai_review_result,
               ai_summary=case when $3 then 'Updated PDF document set queued for AI review.' else 'Office document set secured for manual Legal Affairs review.' end,
               ai_review_result=null,
-              status=case when $3 then 'AI Review Pending' when assigned_reviewer_id is null then 'New' else 'Assigned to Legal Reviewer' end
+              legal_department_status='O',end_user_status='O',
+               status=case
+                 when $3 then 'AI Review Pending'
+                 when exists(select 1 from request_reviewer_assignments a where a.request_id=legal_requests.id) then 'Assigned to Legal Reviewer'
+                 else 'New'
+               end
          where id=$4`,
         [savedFiles.length > 0, retainedPreviousId, hasQueuedPdf, req.params.requestId],
       );
       await client.query("insert into audit_logs(request_id,action,actor_id,actor_name,ip_address) values($1,'Requester updated supporting documents',$2,$3,$4)", [req.params.requestId, req.user.id, req.user.name, req.ip]);
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: "updated the supporting documents for",
+        includeRequester: false,
+        includeManager: true,
+        includeAssignedReviewers: true,
+        detectUnassignedReviewer: false,
+      });
       return ids;
     });
     await removeStoredFiles(removedPaths);
@@ -356,18 +422,94 @@ router.post("/requests/:requestId/comments", async (req, res, next) => {
     if (!await canAccessRequest(req.user, req.params.requestId)) return res.status(404).json({ error: "Request not found." });
     const text = String(req.body.commentText || "").trim();
     if (!text) return res.status(400).json({ error: "Comment text is required." });
-    await query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, text]);
+    await transaction(async (client) => {
+      await client.query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, text]);
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: "added a comment to",
+      });
+    });
     res.status(201).json({ ok: true });
   } catch (error) { next(error); }
 });
 
-router.post("/requests/:requestId/assign-reviewer", requireRoles("Legal Manager", "Owner"), async (req, res, next) => {
+router.put("/requests/:requestId/reviewers", requireReviewAssignmentManager, async (req, res, next) => {
   try {
-    const reviewer = await query(`select u.id,u.full_name from users u join roles r on r.id=u.role_id where u.id=$1 and r.id='legal_reviewer' and u.status='Active'`, [req.body.reviewerId]);
-    if (!reviewer.rows[0]) return res.status(400).json({ error: "Select an active Legal Reviewer." });
-    const result = await query(`update legal_requests set assigned_reviewer_id=$1,status='Assigned to Legal Reviewer',manager_decision='Reviewer Assignment Started' where id=$2 returning id`, [req.body.reviewerId, req.params.requestId]);
-    if (!result.rows[0]) return res.status(404).json({ error: "Request not found." });
-    res.json({ reviewerId: reviewer.rows[0].id, reviewerName: reviewer.rows[0].full_name, status: "Assigned to Legal Reviewer", managerDecision: "Reviewer Assignment Started" });
+    const submittedReviewerIds = Array.isArray(req.body?.reviewerIds) ? req.body.reviewerIds : [];
+    const reviewerIds = [...new Set(submittedReviewerIds.map((value) => String(value || "").trim()).filter(Boolean))];
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (reviewerIds.length === 0 || reviewerIds.length > availableReviewerEmails.length || reviewerIds.some((id) => !uuidPattern.test(id))) {
+      return res.status(400).json({ error: "Select at least one available Legal Reviewer." });
+    }
+
+    const assignment = await transaction(async (client) => {
+      const request = await client.query("select id from legal_requests where id=$1 for update", [req.params.requestId]);
+      if (!request.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
+
+      const reviewers = await client.query(
+        `select u.id,u.full_name,u.username,u.email
+         from users u join roles r on r.id=u.role_id
+         where u.id=any($1::uuid[]) and r.id='legal_reviewer' and u.status='Active'
+           and lower(u.email)=any($2::text[])
+         order by u.full_name`,
+        [reviewerIds, availableReviewerEmails],
+      );
+      if (reviewers.rowCount !== reviewerIds.length) {
+        throw Object.assign(new Error("One or more selected users are not available Legal Reviewers."), { status: 400 });
+      }
+
+      await client.query(
+        "delete from request_reviewer_assignments where request_id=$1 and not (reviewer_id=any($2::uuid[]))",
+        [req.params.requestId, reviewerIds],
+      );
+      for (const reviewer of reviewers.rows) {
+        await client.query(
+          `insert into request_reviewer_assignments(request_id,reviewer_id,assigned_by)
+           values($1,$2,$3) on conflict(request_id,reviewer_id) do nothing`,
+          [req.params.requestId, reviewer.id, req.user.id],
+        );
+      }
+
+      const updated = await client.query(
+        `update legal_requests
+         set assigned_reviewer_id=$1,assigned_manager_id=$2,
+             manager_decision='Reviewer Assignment Updated',
+             status=case when status in ('New','AI Review Complete','AI Review Failed') then 'Assigned to Legal Reviewer' else status end
+         where id=$3 returning status,manager_decision`,
+        [reviewers.rows[0].id, req.user.id, req.params.requestId],
+      );
+      const reviewerNames = reviewers.rows.map((reviewer) => reviewer.full_name).join(", ");
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: `assigned ${reviewerNames} to`,
+        detectUnassignedReviewer: false,
+      });
+      await createNotifications(client, reviewers.rows.map((reviewer) => ({
+        recipientId: reviewer.id,
+        requestId: req.params.requestId,
+        type: "reviewer_assignment",
+        title: `Request assigned to you: ${req.params.requestId}`,
+        message: `${req.user.name} assigned you to request ${req.params.requestId}.`,
+      })));
+      return { reviewers: reviewers.rows, ...updated.rows[0] };
+    });
+
+    const assignedReviewers = assignment.reviewers.map((reviewer) => ({
+      id: reviewer.id,
+      name: reviewer.full_name,
+      username: reviewer.username,
+      email: reviewer.email,
+    }));
+    res.json({
+      assignedReviewers,
+      assignedReviewerIds: assignedReviewers.map((reviewer) => reviewer.id),
+      assignedReviewer: assignedReviewers.map((reviewer) => reviewer.name).join(", "),
+      assignedReviewerId: assignedReviewers[0].id,
+      status: assignment.status,
+      managerDecision: assignment.manager_decision,
+    });
   } catch (error) { next(error); }
 });
 
@@ -376,9 +518,23 @@ router.post("/requests/:requestId/route", requireRoles("Legal Reviewer", "Owner"
     const destinations = { requester: "Waiting for More Information", legal_manager: "Sent for Internal Approval", department_approver: "Under Review" };
     const status = destinations[req.body.destination];
     if (!status) return res.status(400).json({ error: "Unknown routing destination." });
-    const result = await query(`update legal_requests set status=$1 where id=$2 and ($3='Owner' or assigned_reviewer_id=$4) returning id`, [status, req.params.requestId, req.user.role, req.user.id]);
-    if (!result.rows[0]) return res.status(403).json({ error: "You are not assigned to this request." });
-    await query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, String(req.body.commentText || "")]);
+    await transaction(async (client) => {
+      const result = await client.query("update legal_requests set status=$1,legal_department_status='O',end_user_status='O' where id=$2 returning id", [status, req.params.requestId]);
+      if (!result.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
+      await client.query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, String(req.body.commentText || "")]);
+      const destinationLabel = {
+        requester: "the requester",
+        legal_manager: "Legal Manager review",
+        department_approver: "Department Approver review",
+      }[req.body.destination];
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: `routed {request} to ${destinationLabel}`,
+        includeManager: req.body.destination === "legal_manager",
+        includeDepartmentApprover: req.body.destination === "department_approver",
+      });
+    });
     res.json({ status });
   } catch (error) { next(error); }
 });
@@ -390,8 +546,29 @@ router.post("/requests/:requestId/manager-action", requireRoles("Legal Manager",
     const status = statusForManagerDecision(decision);
     await transaction(async (client) => {
       await client.query("insert into manager_actions(request_id,manager_id,action) values($1,$2,$3)", [req.params.requestId, req.user.id, decision]);
-      const updated = await client.query("update legal_requests set manager_decision=$1,status=$2 where id=$3 returning id", [decision, status, req.params.requestId]);
+      const updated = await client.query(
+        `update legal_requests
+         set manager_decision=$1,status=$2,
+             legal_department_status=case when $2 in ('Approved','Closed','Archived') then 'C' else 'O' end,
+             end_user_status=case when $2 in ('Approved','Closed','Archived') then 'C' else 'O' end,
+             completed_at=case when $2 in ('Approved','Closed','Archived') then coalesce(completed_at,now()) else completed_at end
+         where id=$3 returning id`,
+        [decision, status, req.params.requestId],
+      );
       if (!updated.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
+      const managerActivity = {
+        "Response Approved by Legal Manager": "approved the legal response and completed",
+        "Closed by Legal Manager": "closed",
+        "Escalated by Legal Manager": "flagged {request} for escalation",
+        "Reviewer Assignment Started": "started reviewer assignment for",
+      }[decision] || "updated";
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: managerActivity,
+        includeAssignedReviewers: true,
+        detectUnassignedReviewer: false,
+      });
     });
     res.json({ managerDecision: decision, status });
   } catch (error) { next(error); }
@@ -405,7 +582,7 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
     await transaction(async (client) => {
       const updated = await client.query(
         `update legal_requests
-         set department_decision=$1,status=$2
+         set department_decision=$1,status=$2,legal_department_status='O',end_user_status='O'
          where id=$3
            and ($4='Owner' or assigned_department_approver_id=$5 or department_id=$6)
          returning id`,
@@ -413,6 +590,14 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
       );
       if (!updated.rows[0]) throw Object.assign(new Error("Request not found or not assigned to your department."), { status: 403 });
       await client.query("insert into department_approvals(request_id,approver_id,decision,comment_text) values($1,$2,$3,$4)", [req.params.requestId, req.user.id, decision, String(req.body.commentText || "")]);
+      await notifyRequestActivity(client, {
+        requestId: req.params.requestId,
+        actor: req.user,
+        activity: decision === "Department Approved" ? "approved the department review for" : "requested revisions to",
+        includeManager: true,
+        includeAssignedReviewers: true,
+        detectUnassignedReviewer: false,
+      });
     });
     res.json({ departmentDecision: decision, status });
   } catch (error) { next(error); }
@@ -420,16 +605,22 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
 
 router.patch("/checklist/:itemId", requireRoles("Legal Reviewer", "Owner"), async (req, res, next) => {
   try {
-    const result = await query(
-      `update request_checklist_items ci
-       set checked=$1
-       from legal_requests lr
-       where ci.id=$2 and lr.id=ci.request_id
-         and ($3='Owner' or lr.assigned_reviewer_id=$4)
-       returning ci.id`,
-      [Boolean(req.body.checked), req.params.itemId, req.user.role, req.user.id],
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: "Checklist item not found or not assigned to you." });
+    await transaction(async (client) => {
+      const result = await client.query(
+        `update request_checklist_items ci
+         set checked=$1
+         from legal_requests lr
+         where ci.id=$2 and lr.id=ci.request_id
+         returning ci.id,ci.request_id`,
+        [Boolean(req.body.checked), req.params.itemId],
+      );
+      if (!result.rows[0]) throw Object.assign(new Error("Checklist item not found."), { status: 404 });
+      await notifyRequestActivity(client, {
+        requestId: result.rows[0].request_id,
+        actor: req.user,
+        activity: `${req.body.checked ? "selected" : "cleared"} a contract checklist item on`,
+      });
+    });
     res.status(204).end();
   } catch (error) { next(error); }
 });
@@ -536,8 +727,12 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
 
       await client.query(
         `update legal_requests
-         set status=case when assigned_reviewer_id is null then 'AI Review Complete' else 'Assigned to Legal Reviewer' end,
-             risk_level=$1,ai_summary=$2,ai_review_result=$3::jsonb
+         set status=case
+               when exists(select 1 from request_reviewer_assignments a where a.request_id=legal_requests.id) then 'Assigned to Legal Reviewer'
+               else 'AI Review Complete'
+             end,
+             risk_level=$1,ai_summary=$2,ai_review_result=$3::jsonb,
+             legal_department_status='O',end_user_status='O'
          where id=$4`,
         [highestRiskLevel(review), review.draft_review_note, JSON.stringify(review), claimedJob.request_id],
       );
@@ -553,6 +748,12 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
          values('job_processing_completed','status','AI draft review completed; human review required.',$1,$2,$3::jsonb)`,
         [claimedJob.request_id, claimedJob.id, JSON.stringify({ aiMode: review.ai_mode })],
       );
+      await notifyRequestActivity(client, {
+        requestId: claimedJob.request_id,
+        actor: { name: "Legal AI Engine", role: "System" },
+        activity: "completed the initial document review for",
+        detectUnassignedReviewer: false,
+      });
     });
 
     res.json({ processed: true, requestId: claimedJob.request_id, jobId: claimedJob.id, aiMode: review.ai_mode });
@@ -567,12 +768,18 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
            where id=$3`,
           [message.slice(0, 4000), JSON.stringify([{ at: new Date().toISOString(), step: "failed", message: message.slice(0, 1000) }]), claimedJob.id],
         );
-        await client.query("update legal_requests set status='AI Review Failed' where id=$1", [claimedJob.request_id]);
+        await client.query("update legal_requests set status='AI Review Failed',legal_department_status='O',end_user_status='O' where id=$1", [claimedJob.request_id]);
         await client.query(
           `insert into ai_engine_events(event_type,level,message,request_id,job_id,metadata)
            values('job_processing_failed','error',$1,$2,$3,'{}')`,
           [message.slice(0, 1000), claimedJob.request_id, claimedJob.id],
         );
+        await notifyRequestActivity(client, {
+          requestId: claimedJob.request_id,
+          actor: { name: "Legal AI Engine", role: "System" },
+          activity: "reported a document-review issue for",
+          detectUnassignedReviewer: false,
+        });
       }).catch(() => {});
     }
     next(error);
@@ -582,7 +789,7 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
 router.post("/owner/reset-ai", requireRoles("Owner"), async (_req, res, next) => {
   try {
     const result = await transaction(async (client) => {
-      const updated = await client.query(`update legal_requests set ai_summary='AI legal review is pending.',ai_review_result=null,status='AI Review Pending' where id in(select request_id from request_documents where is_current=true and mime_type='application/pdf') returning id`);
+      const updated = await client.query(`update legal_requests set ai_summary='AI legal review is pending.',ai_review_result=null,status='AI Review Pending',legal_department_status='O',end_user_status='O' where id in(select request_id from request_documents where is_current=true and mime_type='application/pdf') returning id`);
       await client.query(`update ai_review_jobs set status='queued',attempt_count=0,last_error=null,started_at=null,completed_at=null,current_step='Reset by Owner' where document_id in(select id from request_documents where is_current=true and mime_type='application/pdf')`);
       return updated.rowCount;
     });

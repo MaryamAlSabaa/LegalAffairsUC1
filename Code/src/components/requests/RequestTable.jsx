@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Icon from "../common/Icon";
+import { exportLegalTrackerCsv, getLegalTrackerRecord } from "../../utils/legalTracker";
+import { getRequestStatusLabel } from "../../utils/requestStatus";
 
 const completedStatuses = new Set(["Approved", "Closed", "Archived"]);
 const emptyFilters = {
@@ -10,7 +12,6 @@ const emptyFilters = {
   category: "all",
   reviewer: "all",
   requester: "all",
-  assignment: "all",
   due: "all",
 };
 
@@ -33,6 +34,24 @@ function getRiskStyle(riskLevel) {
   if (riskLevel === "Medium") return "priority-medium";
   if (riskLevel === "Low") return "priority-low";
   return "risk-neutral";
+}
+
+function matchesStatusFilter(request, statusFilter, assignedReviewerIds) {
+  if (statusFilter === "all") return true;
+  if (statusFilter === "completed") return completedStatuses.has(request.status);
+  if (statusFilter === "reviewer-review") {
+    return assignedReviewerIds.length > 0
+      && ["Assigned to Legal Reviewer", "Under Review"].includes(request.status);
+  }
+  if (statusFilter === "pending-reviewer-assignment") {
+    return assignedReviewerIds.length === 0
+      && !completedStatuses.has(request.status)
+      && request.status !== "Waiting for More Information";
+  }
+  if (statusFilter === "returned-to-requester") {
+    return request.status === "Waiting for More Information";
+  }
+  return true;
 }
 
 function uniqueValues(requests, field) {
@@ -89,12 +108,14 @@ function RequestTable({
   onSelectRequest,
   canOpenDetails,
   canOpenRequest,
-  currentUserId,
   title,
   description,
   kicker = "Matter management",
+  tabs = [],
+  activeTab,
+  onTabChange,
+  legalTrackerMode = false,
 }) {
-  const searchInputRef = useRef(null);
   const [sortConfig, setSortConfig] = useState({ column: "submittedAt", direction: "descending" });
   const [searchTerm, setSearchTerm] = useState("");
   const [filters, setFilters] = useState(emptyFilters);
@@ -103,12 +124,17 @@ function RequestTable({
   const [pageSize, setPageSize] = useState(25);
 
   const options = useMemo(() => ({
-    statuses: uniqueValues(requests, "status"),
     priorities: uniqueValues(requests, "priority"),
     risks: uniqueValues(requests, "riskLevel"),
     departments: uniqueValues(requests, "department"),
     categories: [...new Map(requests.filter((request) => request.categoryCode).map((request) => [request.categoryCode, request.categoryName])).entries()],
-    reviewers: uniqueValues(requests, "assignedReviewer"),
+    reviewers: [...new Set(requests.flatMap((request) =>
+      request.assignedReviewers?.length
+        ? request.assignedReviewers.map((reviewer) => reviewer.name)
+        : request.assignedReviewer && request.assignedReviewer !== "Not Assigned"
+          ? [request.assignedReviewer]
+          : [],
+    ))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
     requesters: uniqueValues(requests, "requester"),
   }), [requests]);
 
@@ -129,25 +155,30 @@ function RequestTable({
         request.priority,
         request.riskLevel,
         request.status,
+        getRequestStatusLabel(request.status),
         request.assignedReviewer,
+        request.partyName,
+        request.endUser,
+        request.lastAction,
+        ...(request.reviewerComments || []).flatMap((comment) => [comment.authorName, comment.text]),
         request.deadline,
         request.submittedAt,
       ].filter(Boolean).join(" ").toLowerCase();
 
-      const assignmentMatches = filters.assignment === "all"
-        || (filters.assignment === "mine" && request.assignedReviewerId === currentUserId)
-        || (filters.assignment === "assigned" && Boolean(request.assignedReviewerId))
-        || (filters.assignment === "unassigned" && !request.assignedReviewerId);
-
+      const assignedReviewerIds = request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean);
+      const assignedReviewerNames = request.assignedReviewers?.length
+        ? request.assignedReviewers.map((reviewer) => reviewer.name)
+        : request.assignedReviewer && request.assignedReviewer !== "Not Assigned"
+          ? [request.assignedReviewer]
+          : [];
       return (!query || searchable.includes(query))
-        && (filters.status === "all" || request.status === filters.status)
+        && matchesStatusFilter(request, filters.status, assignedReviewerIds)
         && (filters.priority === "all" || request.priority === filters.priority)
         && (filters.risk === "all" || request.riskLevel === filters.risk)
         && (filters.department === "all" || request.department === filters.department)
         && (filters.category === "all" || request.categoryCode === filters.category)
-        && (filters.reviewer === "all" || request.assignedReviewer === filters.reviewer)
+        && (filters.reviewer === "all" || assignedReviewerNames.includes(filters.reviewer))
         && (filters.requester === "all" || request.requester === filters.requester)
-        && assignmentMatches
         && matchesDueFilter(request, filters.due);
     });
 
@@ -176,24 +207,13 @@ function RequestTable({
       return sortConfig.direction === "ascending" ? comparison : -comparison;
     });
     return filtered;
-  }, [requests, searchTerm, filters, sortConfig, currentUserId]);
+  }, [requests, searchTerm, filters, sortConfig]);
 
   const pageCount = Math.max(1, Math.ceil(filteredRequests.length / pageSize));
   const currentPage = Math.min(page, pageCount);
   const pageRequests = filteredRequests.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   useEffect(() => setPage(1), [searchTerm, filters, sortConfig, pageSize]);
-  useEffect(() => {
-    function focusSearch(event) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    }
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, []);
-
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
   }
@@ -218,9 +238,38 @@ function RequestTable({
       </div>
 
       <div className="table-panel">
+        {tabs.length > 0 && (
+          <div className="request-scope-tabs" role="tablist" aria-label="Request table scope">
+            {tabs.map((tab) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                className={activeTab === tab.id ? "is-active" : ""}
+                key={tab.id}
+                onClick={() => onTabChange?.(tab.id)}
+              >
+                <span>{tab.label}</span>
+                <strong>{tab.count}</strong>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="table-toolbar">
-          <label className="table-search"><Icon name="search" size={18} /><input ref={searchInputRef} type="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search any matter field" /><span>Ctrl K</span></label>
+          <label className="table-search"><Icon name="search" size={18} /><input type="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Filter this request table" /></label>
           <div className="table-toolbar-actions">
+            {legalTrackerMode && (
+              <button
+                type="button"
+                className="table-export-button"
+                onClick={() => exportLegalTrackerCsv(filteredRequests)}
+                disabled={filteredRequests.length === 0}
+                title="Export all requests matching the current filters"
+              >
+                <Icon name="download" size={15} />
+                Export CSV
+              </button>
+            )}
             <button type="button" className={`filter-toggle ${filtersExpanded ? "is-open" : ""}`} onClick={() => setFiltersExpanded((value) => !value)} aria-expanded={filtersExpanded} aria-controls="request-table-filters">
               <Icon name="filter" size={15} />
               <span>{filtersExpanded ? "Hide filters" : "Show filters"}</span>
@@ -232,49 +281,91 @@ function RequestTable({
         </div>
 
         {filtersExpanded && <div className="table-filter-grid" id="request-table-filters">
-          <FilterSelect label="Status" value={filters.status} onChange={(value) => updateFilter("status", value)}><option value="all">All statuses</option>{options.statuses.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
+          <FilterSelect label="Status" value={filters.status} onChange={(value) => updateFilter("status", value)}>
+            <option value="all">All request statuses</option>
+            <option value="completed">Completed</option>
+            <option value="reviewer-review">Under review by reviewer</option>
+            <option value="pending-reviewer-assignment">Pending assignment to reviewer</option>
+            <option value="returned-to-requester">Returned to requester</option>
+          </FilterSelect>
           <FilterSelect label="Priority" value={filters.priority} onChange={(value) => updateFilter("priority", value)}><option value="all">All priorities</option>{options.priorities.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
           <FilterSelect label="Risk" value={filters.risk} onChange={(value) => updateFilter("risk", value)}><option value="all">All risk levels</option>{options.risks.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
           <FilterSelect label="Department" value={filters.department} onChange={(value) => updateFilter("department", value)}><option value="all">All departments</option>{options.departments.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
           <FilterSelect label="Category" value={filters.category} onChange={(value) => updateFilter("category", value)}><option value="all">All categories</option>{options.categories.map(([code, name]) => <option value={code} key={code}>{code} - {name}</option>)}</FilterSelect>
-          <FilterSelect label="Reviewer" value={filters.reviewer} onChange={(value) => updateFilter("reviewer", value)}><option value="all">All reviewers</option>{options.reviewers.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
+          <FilterSelect label="Reviewers" value={filters.reviewer} onChange={(value) => updateFilter("reviewer", value)}><option value="all">All reviewers</option>{options.reviewers.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
           <FilterSelect label="Requester" value={filters.requester} onChange={(value) => updateFilter("requester", value)}><option value="all">All requesters</option>{options.requesters.map((value) => <option value={value} key={value}>{value}</option>)}</FilterSelect>
-          <FilterSelect label="Assignment" value={filters.assignment} onChange={(value) => updateFilter("assignment", value)}><option value="all">Any assignment</option>{currentUserId && <option value="mine">Assigned to me</option>}<option value="assigned">Assigned</option><option value="unassigned">Unassigned</option></FilterSelect>
           <FilterSelect label="Due date" value={filters.due} onChange={(value) => updateFilter("due", value)}><option value="all">Any due date</option><option value="overdue">Overdue</option><option value="next-7">Due in 7 days</option><option value="next-30">Due in 30 days</option><option value="none">No deadline</option></FilterSelect>
         </div>}
 
         <div className="overflow-x-auto">
-          <table className="professional-table request-register-table">
+          <table className={`professional-table request-register-table ${legalTrackerMode ? "legal-tracker-table" : ""}`}>
             <thead><tr>
               <th><SortButton label="Matter" column="title" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Submitted" column="submittedAt" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Requester" column="requester" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Department" column="department" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Category" column="categoryName" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Priority" column="priority" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Risk" column="riskLevel" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Status" column="status" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Reviewer" column="assignedReviewer" sortConfig={sortConfig} onSort={handleSort} /></th>
-              <th><SortButton label="Due" column="deadline" sortConfig={sortConfig} onSort={handleSort} /></th>
+              {legalTrackerMode ? (
+                <>
+                  <th><SortButton label="Date Received" column="submittedAt" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Deadline" column="deadline" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th>Party Name</th>
+                  <th>End User</th>
+                  <th><SortButton label="Matter Type" column="categoryName" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Responsible Lawyer (reviewer)" column="assignedReviewer" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th>Comments / Notes</th>
+                  <th>Last Update / Actions Taken</th>
+                  <th>Legal Department Status (C/O)</th>
+                  <th>End User Status (C/O)</th>
+                  <th>Date of Completion / AnaSign Signature</th>
+                </>
+              ) : (
+                <>
+                  <th><SortButton label="Submitted" column="submittedAt" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Requester" column="requester" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Department" column="department" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Category" column="categoryName" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Priority" column="priority" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Risk" column="riskLevel" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Status" column="status" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Reviewers" column="assignedReviewer" sortConfig={sortConfig} onSort={handleSort} /></th>
+                  <th><SortButton label="Due" column="deadline" sortConfig={sortConfig} onSort={handleSort} /></th>
+                </>
+              )}
               {canOpenDetails && <th aria-label="Actions" />}
             </tr></thead>
             <tbody>
               {pageRequests.length === 0 ? (
-                <tr><td className="table-empty" colSpan={canOpenDetails ? 11 : 10}><span><Icon name="search" size={23} /></span><strong>No matching matters</strong><p>Adjust or clear the filters to see more results.</p></td></tr>
+                <tr><td className="table-empty" colSpan={(legalTrackerMode ? 12 : 10) + (canOpenDetails ? 1 : 0)}><span><Icon name="search" size={23} /></span><strong>No matching matters</strong><p>Adjust or clear the filters to see more results.</p></td></tr>
               ) : pageRequests.map((request) => {
                 const mayOpen = canOpenDetails && (!canOpenRequest || canOpenRequest(request));
+                const tracker = getLegalTrackerRecord(request);
                 return (
                   <tr key={request.id} className={request.status === "Closed" ? "is-closed" : ""}>
                     <td><div className="matter-cell"><span className="matter-file"><Icon name="file" size={18} /></span><div><strong>{request.title}</strong><p>Tracking {request.trackingNumber || request.id}</p></div></div></td>
-                    <td><span className="date-cell">{request.submittedAt || "Not recorded"}</span></td>
-                    <td><strong className="requester-name">{request.requester}</strong><small>@{request.requesterUsername}</small></td>
-                    <td><span>{request.department}</span></td>
-                    <td><span>{request.categoryName}</span><small>{request.categoryCode}</small></td>
-                    <td><span className={`priority-badge ${getPriorityStyle(request.priority)}`}><i />{request.priority}</span></td>
-                    <td><span className={`risk-label ${getRiskStyle(request.riskLevel)}`}>{request.riskLevel || "Not Classified"}</span></td>
-                    <td><span className={`status-badge ${getStatusStyle(request.status)}`}>{request.status}</span>{request.aiReviewJob?.status === "processing" && <small className="processing-label">Processing - {request.aiReviewJob.currentStep || "AI review"}</small>}</td>
-                    <td><span>{request.assignedReviewer || "Not assigned"}</span></td>
-                    <td><span>{request.deadline || "No deadline"}</span></td>
+                    {legalTrackerMode ? (
+                      <>
+                        <td><span className="date-cell">{tracker.dateReceived}</span></td>
+                        <td><span>{tracker.deadline}</span></td>
+                        <td><span>{tracker.partyName}</span></td>
+                        <td><span>{tracker.endUser}</span></td>
+                        <td><span>{tracker.matterType}</span><small>{request.categoryCode}</small></td>
+                        <td><span>{tracker.responsibleLawyer}</span></td>
+                        <td className="tracker-long-text"><span>{tracker.commentsNotes}</span></td>
+                        <td className="tracker-long-text"><span>{tracker.lastUpdateActionsTaken}</span></td>
+                        <td><span className={`tracker-co-badge ${tracker.legalDepartmentStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.legalDepartmentStatus}</span></td>
+                        <td><span className={`tracker-co-badge ${tracker.endUserStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.endUserStatus}</span></td>
+                        <td className="tracker-long-text"><span>{tracker.completionAnaSign}</span></td>
+                      </>
+                    ) : (
+                      <>
+                        <td><span className="date-cell">{request.submittedAt || "Not recorded"}</span></td>
+                        <td><strong className="requester-name">{request.requester}</strong><small>@{request.requesterUsername}</small></td>
+                        <td><span>{request.department}</span></td>
+                        <td><span>{request.categoryName}</span><small>{request.categoryCode}</small></td>
+                        <td><span className={`priority-badge ${getPriorityStyle(request.priority)}`}><i />{request.priority}</span></td>
+                        <td><span className={`risk-label ${getRiskStyle(request.riskLevel)}`}>{request.riskLevel || "Not Classified"}</span></td>
+                        <td><span className={`status-badge ${getStatusStyle(request.status)}`}>{getRequestStatusLabel(request.status)}</span>{request.aiReviewJob?.status === "processing" && <small className="processing-label">Processing - {request.aiReviewJob.currentStep || "AI review"}</small>}</td>
+                        <td><span>{request.assignedReviewer || "Not assigned"}</span></td>
+                        <td><span>{request.deadline || "No deadline"}</span></td>
+                      </>
+                    )}
                     {canOpenDetails && <td><button className="row-action" type="button" disabled={!mayOpen} onClick={() => mayOpen && onSelectRequest(request.id)} title={mayOpen ? "Open request" : "Request details are available to the assigned reviewer"} aria-label={mayOpen ? `Open ${request.title}` : `${request.title} is assigned to another reviewer`}><Icon name={mayOpen ? "chevronRight" : "lock"} size={17} /></button></td>}
                   </tr>
                 );

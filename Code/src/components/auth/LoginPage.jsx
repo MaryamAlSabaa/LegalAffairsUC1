@@ -37,7 +37,7 @@ function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onTog
   }
 
   function chooseDemoAccount(account) {
-    setUsername(account);
+    setUsername(account === "manager" ? "graham.cowan" : account);
     setPassword("password123");
     setErrorMessage("");
     setFieldErrors({});

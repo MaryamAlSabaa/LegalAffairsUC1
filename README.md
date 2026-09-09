@@ -15,7 +15,7 @@ Express API + built React UI
 PostgreSQL           Central document folder
 ```
 
-Users never connect directly to PostgreSQL and cannot browse the document directory. The API checks their authenticated role and request assignment before returning data or serving a PDF, Word, or Excel document.
+Users never connect directly to PostgreSQL and cannot browse the document directory. The API checks their authenticated role before returning data or serving a PDF, Word, or Excel document. Legal Reviewers can access the global Legal Affairs portfolio for colleague coverage; requester and department access remains scoped.
 
 ## Run locally for development
 
@@ -39,9 +39,20 @@ npm install
 npm run dev
 ```
 
+to remove demo data:
+cd server
+npm run db:clear-demo
+
 Open `http://localhost:5173`. The Vite development server forwards `/api` requests to the API on port 4000.
 
-The optional seed command creates six local demo accounts. Their usernames are `requester`, `reviewer`, `manager`, `approver`, `admin`, and `owner`; the development-only password is `password123`. Change or remove these accounts before any real deployment.
+The optional seed command creates the six generic local demo accounts plus the KU Legal Affairs review team below. The development-only password is `password123` for every seeded account. Change or remove these accounts before any real deployment.
+
+- Assignment manager: `graham.cowan@ku.ac.ae`
+- Legal Reviewers: `omar.elkayal@ku.ac.ae`, `khalid.malali@ku.ac.ae`, `antigoni.filippopoulou@ku.ac.ae`, and `mohamed.almaazmi@ku.ac.ae`
+
+New requests are not automatically assigned. Only Graham Cowan can add or change reviewer assignments, and a request may be assigned to multiple reviewers.
+
+To populate the dashboards and request tables with clearly labelled temporary data, run `npm run db:seed-demo` in `server`. It creates IDs beginning with `DEMO-LA-` and dummy requester usernames beginning with `dummy.`. Remove only that demonstration dataset later with `npm run db:clear-demo`.
 
 ## Make it usable by other users
 

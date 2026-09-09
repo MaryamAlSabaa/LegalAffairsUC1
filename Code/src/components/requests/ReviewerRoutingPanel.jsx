@@ -17,7 +17,8 @@ function ReviewerRoutingPanel({ request, canRouteRequest, onRouteRequest }) {
     setErrorMessage("");
 
     try {
-      await onRouteRequest(destination, commentText.trim());
+      const saved = await onRouteRequest(destination, commentText.trim());
+      if (saved === false) return;
       setCommentText("");
     } catch (error) {
       setErrorMessage(
@@ -96,5 +97,5 @@ A routing decision changes the request workflow. Requiring a message gives the r
 Routing is saved through the API and can take time. async/await waits for that operation, while isSaving disables buttons so a double click cannot create two routing actions.
 
 4. Why does the component return null?
-Returning null renders nothing. The Request Details page only shows this panel when the current reviewer is assigned to the request; the database repeats this permission check for security.
+Returning null renders nothing. The Request Details page shows this panel to Legal Reviewers and Owners; other roles do not receive reviewer routing controls.
 */

@@ -1,9 +1,9 @@
 export const navigationByRole = {
   Requester: [
+    { id: "dashboard", label: "My Overview", icon: "dashboard" },
     { id: "new-request", label: "Submit Request", icon: "plus" },
     { id: "requests", label: "Active Requests", icon: "inbox" },
-    { id: "closed-requests", label: "Closed Requests", icon: "archive" },
-    { id: "details", label: "Request Details", icon: "file" },
+    { id: "completed-requests", label: "Completed Requests", icon: "archive" },
   ],
   "Admin User": [
     { id: "admin", label: "User Administration", icon: "users" },
@@ -13,9 +13,8 @@ export const navigationByRole = {
   Owner: [
     { id: "dashboard", label: "Executive Overview", icon: "dashboard" },
     { id: "new-request", label: "Submit Request", icon: "plus" },
-    { id: "requests", label: "Legal Requests", icon: "inbox" },
+    { id: "completed-requests", label: "Completed Requests", icon: "archive" },
     { id: "reviewers", label: "Review Team", icon: "users" },
-    { id: "details", label: "Request Details", icon: "file" },
     { id: "admin", label: "User Administration", icon: "settings" },
     { id: "owner-controls", label: "Owner Controls", icon: "shield" },
     { id: "legal-engine", label: "Legal AI Engine", icon: "cpu" },
@@ -23,21 +22,20 @@ export const navigationByRole = {
   ],
   "Legal Reviewer": [
     { id: "dashboard", label: "Workload Overview", icon: "dashboard" },
-    { id: "reviewer-review-queue", label: "My Review Queue", icon: "clipboard" },
-    { id: "details", label: "Request Details", icon: "file" },
+    { id: "requests", label: "All Legal Requests", icon: "inbox" },
+    { id: "completed-requests", label: "Completed Requests", icon: "archive" },
   ],
   "Legal Manager": [
     { id: "dashboard", label: "Executive Overview", icon: "dashboard" },
-    { id: "requests", label: "All Legal Requests", icon: "inbox" },
+    { id: "completed-requests", label: "Completed Requests", icon: "archive" },
     { id: "manager-review-queue", label: "My Approval Queue", icon: "clipboard" },
     { id: "reviewers", label: "Review Team", icon: "users" },
-    { id: "details", label: "Request Details", icon: "file" },
   ],
   "Department Approver": [
     { id: "dashboard", label: "Department Overview", icon: "dashboard" },
     { id: "requests", label: "Department Requests", icon: "inbox" },
+    { id: "completed-requests", label: "Completed Requests", icon: "archive" },
     { id: "department-review-queue", label: "My Approval Queue", icon: "clipboard" },
-    { id: "details", label: "Request Details", icon: "file" },
   ],
 };
 

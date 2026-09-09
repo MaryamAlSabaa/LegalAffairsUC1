@@ -3,23 +3,16 @@ import { useState } from "react";
 function ManagerActions({
   request,
   canManageManagerActions,
-  reviewers,
   onManagerDecisionChange,
-  onAssignReviewer,
 }) {
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [showAssignment, setShowAssignment] = useState(false);
-  const [selectedReviewerId, setSelectedReviewerId] = useState("");
+  const [showCloseConfirmation, setShowCloseConfirmation] = useState(false);
 
   if (!request) return null;
 
   const disabledButtonClasses = "cursor-not-allowed opacity-60";
   const actionsDisabled = !canManageManagerActions || isSaving;
-  const selectedReviewer = reviewers.find(
-    (reviewer) => reviewer.id === selectedReviewerId,
-  );
-
   async function updateManagerDecision(nextDecision) {
     if (!canManageManagerActions || isSaving) return;
 
@@ -28,31 +21,10 @@ function ManagerActions({
 
     try {
       await onManagerDecisionChange(nextDecision);
+      if (nextDecision === "Closed by Legal Manager") setShowCloseConfirmation(false);
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "Could not save manager action.",
-      );
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  async function confirmReviewerAssignment() {
-    if (!selectedReviewer || actionsDisabled) {
-      setErrorMessage("Select a Legal Reviewer before confirming assignment.");
-      return;
-    }
-
-    setIsSaving(true);
-    setErrorMessage("");
-
-    try {
-      await onAssignReviewer(selectedReviewer.id);
-      setShowAssignment(false);
-      setSelectedReviewerId("");
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Could not assign the reviewer.",
       );
     } finally {
       setIsSaving(false);
@@ -63,8 +35,7 @@ function ManagerActions({
     <div className="bg-white border border-slate-200 rounded-2xl p-5">
       <h3 className="font-bold text-slate-900">Legal Manager Actions</h3>
       <p className="text-sm text-slate-500 mt-1">
-        Approve, close, escalate, or assign this request to a Legal Reviewer in
-        your department.
+        Record the Legal Manager's final workflow decision. Each action explains its effect below.
       </p>
 
       {!canManageManagerActions && (
@@ -75,91 +46,80 @@ function ManagerActions({
       )}
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+          <button
+            className={`w-full rounded-lg bg-blue-700 px-4 py-3 font-semibold text-white hover:bg-blue-800 disabled:hover:bg-blue-700 ${
+              actionsDisabled ? disabledButtonClasses : ""
+            }`}
+            type="button"
+            disabled={actionsDisabled}
+            onClick={() =>
+              updateManagerDecision("Response Approved by Legal Manager")
+            }
+          >
+            Approve Response &amp; Complete
+          </button>
+          <p className="mt-2 text-xs leading-5 text-blue-900">
+            Confirms the final legal response is approved and marks the request, Legal Department status, and End User status as completed.
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-orange-200 bg-orange-50 p-3">
+          <button
+            className={`w-full rounded-lg border border-orange-400 bg-white px-4 py-3 font-semibold text-orange-800 hover:bg-orange-100 disabled:hover:bg-white ${
+              actionsDisabled ? disabledButtonClasses : ""
+            }`}
+            type="button"
+            disabled={actionsDisabled}
+            onClick={() => updateManagerDecision("Escalated by Legal Manager")}
+          >
+            Flag as Escalated
+          </button>
+          <p className="mt-2 text-xs leading-5 text-orange-900">
+            No escalation recipient is configured yet. This records the escalation and keeps the request open and under review.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-xl border-2 border-red-300 bg-red-50 p-4">
+        <p className="text-xs font-bold uppercase tracking-wide text-red-800">Important action</p>
+        <p className="mt-1 text-xs leading-5 text-red-800">
+          Close the request without approving a final legal response. A confirmation is required.
+        </p>
         <button
-          className={`rounded-lg bg-blue-700 px-4 py-3 font-semibold text-white hover:bg-blue-800 disabled:hover:bg-blue-700 ${
+          className={`mt-3 w-full rounded-lg bg-red-700 px-4 py-3 font-semibold text-white hover:bg-red-800 disabled:hover:bg-red-700 ${
             actionsDisabled ? disabledButtonClasses : ""
           }`}
           type="button"
           disabled={actionsDisabled}
-          onClick={() =>
-            updateManagerDecision("Response Approved by Legal Manager")
-          }
-        >
-          Approve Response
-        </button>
-        <button
-          className={`rounded-lg border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:hover:bg-white ${
-            actionsDisabled ? disabledButtonClasses : ""
-          }`}
-          type="button"
-          disabled={actionsDisabled}
-          onClick={() => updateManagerDecision("Closed by Legal Manager")}
+          onClick={() => setShowCloseConfirmation(true)}
         >
           Close Request
         </button>
-        <button
-          className={`rounded-lg border border-orange-300 px-4 py-3 font-semibold text-orange-700 hover:bg-orange-50 disabled:hover:bg-white ${
-            actionsDisabled ? disabledButtonClasses : ""
-          }`}
-          type="button"
-          disabled={actionsDisabled}
-          onClick={() => updateManagerDecision("Escalated by Legal Manager")}
-        >
-          Escalate Request
-        </button>
-        <button
-          className={`rounded-lg border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:hover:bg-white ${
-            actionsDisabled ? disabledButtonClasses : ""
-          }`}
-          type="button"
-          disabled={actionsDisabled}
-          onClick={() => setShowAssignment(true)}
-        >
-          Assign Reviewer
-        </button>
       </div>
 
-      {showAssignment && (
-        <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-4">
-          <label className="block text-sm font-semibold text-slate-800">
-            Legal Reviewers in your department
-            <select
-              className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal text-slate-900"
-              value={selectedReviewerId}
-              onChange={(event) => setSelectedReviewerId(event.target.value)}
-              disabled={actionsDisabled || reviewers.length === 0}
-            >
-              <option value="">Select a reviewer</option>
-              {reviewers.map((reviewer) => (
-                <option key={reviewer.id} value={reviewer.id}>
-                  {reviewer.name} (@{reviewer.username})
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {reviewers.length === 0 && (
-            <p className="mt-3 text-sm text-orange-700">
-              No Legal Reviewers are configured for your department.
-            </p>
-          )}
-
-          <div className="mt-4 flex flex-wrap gap-3">
+      {showCloseConfirmation && (
+        <div className="mt-4 rounded-xl border-2 border-red-400 bg-white p-4" role="alertdialog" aria-labelledby="close-request-confirmation-title">
+          <h4 className="font-bold text-red-900" id="close-request-confirmation-title">Confirm request closure</h4>
+          <p className="mt-2 text-sm leading-6 text-slate-700">
+            Close <strong>{request.trackingNumber || request.id}</strong>? This ends the active workflow, records the completion date, and changes both C/O statuses to C.
+          </p>
+          <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               type="button"
-              className="rounded-lg bg-blue-700 px-4 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={actionsDisabled || !selectedReviewer}
-              onClick={confirmReviewerAssignment}
-            >
-              Confirm Assignment
-            </button>
-            <button
-              type="button"
-              className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-white"
               disabled={isSaving}
-              onClick={() => setShowAssignment(false)}
+              onClick={() => setShowCloseConfirmation(false)}
             >
               Cancel
+            </button>
+            <button
+              className="rounded-lg bg-red-700 px-4 py-2 font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+              type="button"
+              disabled={isSaving}
+              onClick={() => updateManagerDecision("Closed by Legal Manager")}
+            >
+              {isSaving ? "Closing request…" : "Yes, close request"}
             </button>
           </div>
         </div>

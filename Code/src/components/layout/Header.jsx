@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { getPasswordValidationError } from "../../services/authService";
 import Icon from "../common/Icon";
+import GlobalRequestSearch from "./GlobalRequestSearch";
+import NotificationCenter from "./NotificationCenter";
 
 function getDisplayName(user) {
   return !user.prefix || user.prefix === "None" ? user.name : `${user.prefix} ${user.name}`;
@@ -10,7 +12,7 @@ function getInitials(name = "KU User") {
   return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function Header({ currentUser, currentPage, onLogout, onChangePassword, theme, onToggleTheme }) {
+function Header({ currentUser, currentPage, requests, notifications, onMarkNotificationRead, onMarkAllNotificationsRead, onSelectRequest, onLogout, onChangePassword, theme, onToggleTheme }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEmail, setShowEmail] = useState(false);
@@ -24,14 +26,13 @@ function Header({ currentUser, currentPage, onLogout, onChangePassword, theme, o
     dashboard: "Overview",
     "new-request": "Submit a Legal Request",
     requests: "Legal Requests",
-    "closed-requests": "Closed Requests",
+    "completed-requests": "Completed Requests",
     details: "Request Details",
     reviewers: "Review Team",
     admin: "User Administration",
     "owner-controls": "Owner Controls",
     "legal-engine": "Legal AI Engine",
     audit: "Audit Log",
-    "reviewer-review-queue": "My Review Queue",
     "manager-review-queue": "My Approval Queue",
     "department-review-queue": "My Approval Queue",
   };
@@ -77,8 +78,18 @@ function Header({ currentUser, currentPage, onLogout, onChangePassword, theme, o
           <h1>{pageLabels[currentPage] || "Legal Affairs Platform"}</h1>
         </div>
 
+        <GlobalRequestSearch requests={requests} onSelectRequest={onSelectRequest} />
+
         <div className="header-actions">
           <div className="secure-session"><span /> Secure session</div>
+          {["Requester", "Legal Reviewer", "Legal Manager"].includes(currentUser.role) && (
+            <NotificationCenter
+              notifications={notifications}
+              onMarkRead={onMarkNotificationRead}
+              onMarkAllRead={onMarkAllNotificationsRead}
+              onSelectRequest={onSelectRequest}
+            />
+          )}
           <button type="button" className="icon-button" onClick={onToggleTheme} aria-label="Toggle color theme">
             <Icon name={theme === "dark" ? "sun" : "moon"} size={19} />
           </button>

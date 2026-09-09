@@ -69,6 +69,8 @@ create table if not exists legal_requests (
   id text primary key,
   title text not null,
   description text not null default '',
+  party_name text not null default 'Not recorded',
+  end_user_name text not null default 'Not recorded',
   requester_id uuid not null references users(id),
   department_id text not null references departments(id),
   category_code text not null references legal_categories(code),
@@ -87,12 +89,44 @@ create table if not exists legal_requests (
   previous_ai_review_result jsonb,
   manager_decision text default 'Pending Legal Manager Review',
   department_decision text default 'Pending Department Review',
+  legal_department_status text not null default 'O' check (legal_department_status in ('C', 'O')),
+  end_user_status text not null default 'O' check (end_user_status in ('C', 'O')),
+  completed_at timestamptz,
+  anasign_signature text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table legal_requests add column if not exists party_name text not null default 'Not recorded';
+alter table legal_requests add column if not exists end_user_name text not null default 'Not recorded';
+alter table legal_requests add column if not exists legal_department_status text not null default 'O';
+alter table legal_requests add column if not exists end_user_status text not null default 'O';
+alter table legal_requests add column if not exists completed_at timestamptz;
+alter table legal_requests add column if not exists anasign_signature text;
+update legal_requests
+set legal_department_status='C', end_user_status='C'
+where status in ('Approved', 'Closed', 'Archived');
 create index if not exists legal_requests_requester_idx on legal_requests(requester_id);
 create index if not exists legal_requests_reviewer_idx on legal_requests(assigned_reviewer_id);
 create index if not exists legal_requests_status_idx on legal_requests(status);
+
+-- Reviewer assignment is many-to-many. The legacy assigned_reviewer_id column
+-- remains during the transition so older installations can be upgraded without
+-- losing their current assignment.
+create table if not exists request_reviewer_assignments (
+  request_id text not null references legal_requests(id) on delete cascade,
+  reviewer_id uuid not null references users(id),
+  assigned_by uuid references users(id) on delete set null,
+  assigned_at timestamptz not null default now(),
+  primary key (request_id, reviewer_id)
+);
+create index if not exists request_reviewer_assignments_reviewer_idx
+  on request_reviewer_assignments(reviewer_id, assigned_at desc);
+
+insert into request_reviewer_assignments (request_id, reviewer_id, assigned_by)
+select id, assigned_reviewer_id, assigned_manager_id
+from legal_requests
+where assigned_reviewer_id is not null
+on conflict (request_id, reviewer_id) do nothing;
 
 create table if not exists request_documents (
   id uuid primary key default gen_random_uuid(),
@@ -170,6 +204,19 @@ create table if not exists audit_logs (
 -- as text lets account and system events be audited even without a request.
 alter table audit_logs drop constraint if exists audit_logs_request_id_fkey;
 create index if not exists audit_logs_created_idx on audit_logs(created_at desc);
+
+create table if not exists notifications (
+  id bigserial primary key,
+  recipient_id uuid not null references users(id) on delete cascade,
+  request_id text references legal_requests(id) on delete cascade,
+  notification_type text not null default 'request_activity',
+  title text not null,
+  message text not null,
+  is_read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_recipient_created_idx on notifications(recipient_id,created_at desc);
+create index if not exists notifications_recipient_unread_idx on notifications(recipient_id,is_read) where is_read=false;
 
 create table if not exists ai_review_jobs (
   id uuid primary key default gen_random_uuid(),

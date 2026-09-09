@@ -8,7 +8,9 @@
     "start": "node server.js",
     "db:init": "node scripts/init-db.js",
     "db:seed": "node scripts/seed.js",
-    "check": "node --check server.js && node --check routes/apiRoutes.js && node --check routes/authRoutes.js && node --check services/aiReviewService.js"
+    "db:seed-demo": "node scripts/seed-demo-data.js",
+    "db:clear-demo": "node scripts/clear-demo-data.js",
+    "check": "node --check server.js && node --check routes/apiRoutes.js && node --check routes/authRoutes.js && node --check services/requestService.js && node --check services/notificationService.js && node --check services/aiReviewService.js && node --check scripts/seed.js && node --check scripts/seed-demo-data.js && node --check scripts/clear-demo-data.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

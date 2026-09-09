@@ -28,6 +28,18 @@ export async function fetchBackendRequests() {
   return withDocumentUrls(await apiRequest("/requests"));
 }
 
+export async function fetchNotifications() {
+  return apiRequest("/notifications");
+}
+
+export async function markNotificationRead(notificationId) {
+  await apiRequest(`/notifications/${encodeURIComponent(notificationId)}/read`, { method: "PATCH" });
+}
+
+export async function markAllNotificationsRead() {
+  await apiRequest("/notifications/read-all", { method: "POST" });
+}
+
 export async function fetchRequestOverview() {
   return apiRequest("/requests/overview");
 }
@@ -52,8 +64,8 @@ export async function updateRequesterDocuments({ requestId, files, removeDocumen
   return apiRequest(`/requests/${encodeURIComponent(requestId)}/documents`, { method: "PATCH", body });
 }
 
-export async function assignReviewerAsManager({ requestId, reviewerId }) {
-  return apiRequest(`/requests/${encodeURIComponent(requestId)}/assign-reviewer`, { method: "POST", body: { reviewerId } });
+export async function assignReviewersAsManager({ requestId, reviewerIds }) {
+  return apiRequest(`/requests/${encodeURIComponent(requestId)}/reviewers`, { method: "PUT", body: { reviewerIds } });
 }
 
 export async function routeRequestAsReviewer({ requestId, destination, commentText }) {

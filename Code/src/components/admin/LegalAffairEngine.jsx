@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getRequestStatusLabel } from "../../utils/requestStatus";
 
 const priorityOrder = ["Urgent", "High", "Medium", "Low"];
 
@@ -145,7 +146,7 @@ function QueueRequestRow({
             {request.id} — {request.title}
           </p>
           <p className="mt-1 text-slate-500">
-            Status: {request.status} · Queue: {job?.status || "none"} · Global
+            Status: {getRequestStatusLabel(request.status)} · Queue: {job?.status || "none"} · Global
             position: {job?.queuePosition ? `#${job.queuePosition}` : "N/A"} ·
             Priority position: {job?.priorityQueuePosition ? `#${job.priorityQueuePosition}` : "N/A"}
           </p>
@@ -474,7 +475,7 @@ function EngineOutputsCard({ activeRequests }) {
                     </p>
                   </div>
                   <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-700">
-                    {request.status}
+                    {getRequestStatusLabel(request.status)}
                   </span>
                 </div>
 

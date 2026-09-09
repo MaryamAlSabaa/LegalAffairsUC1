@@ -1,39 +1,102 @@
+import { useEffect, useState } from "react";
 import Icon from "../common/Icon";
-import InfoButton from "../common/InfoButton";
-import RequestTable from "../requests/RequestTable";
+import { getRequestStatusLabel } from "../../utils/requestStatus";
 
-function statusTone(status = "") {
-  if (status.includes("Approved") || status === "Closed") return "success";
-  if (status.includes("Waiting")) return "warning";
-  if (status.includes("Review")) return "info";
-  return "neutral";
+const completedStatuses = new Set(["Approved", "Closed", "Archived"]);
+
+function deadlinePosition(value) {
+  if (!value || value === "No deadline selected") return null;
+  const deadline = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(deadline.getTime())) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.ceil((deadline.getTime() - today.getTime()) / 86_400_000);
 }
 
-function DashboardCards({ requests, allRequests = requests, onSelectFilter, onSelectRequest, currentUser }) {
+function deadlineLabel(request) {
+  const days = deadlinePosition(request.deadline);
+  if (days === null) return "No deadline";
+  if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`;
+  if (days === 0) return "Due today";
+  return `Due in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+function RequestListModal({ title, description, requests, onClose, onSelectRequest }) {
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="dashboard-list-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-list-title">
+        <header className="dashboard-list-modal-header">
+          <div>
+            <p className="page-kicker">Request follow-up</p>
+            <h2 id="dashboard-list-title">{title}</h2>
+            <p>{description}</p>
+          </div>
+          <button type="button" className="dashboard-modal-close" onClick={onClose} aria-label="Close request list">&times;</button>
+        </header>
+
+        <div className="dashboard-list-modal-count"><strong>{requests.length}</strong> request{requests.length === 1 ? "" : "s"}</div>
+        <div className="dashboard-modal-request-list">
+          {requests.length === 0 ? (
+            <div className="dashboard-modal-empty"><Icon name="inbox" size={24} /><strong>No requests in this list</strong><p>There is nothing requiring follow-up in this category.</p></div>
+          ) : requests.map((request) => (
+            <article className="dashboard-modal-request" key={request.id}>
+              <span className="recent-file-icon"><Icon name="file" size={18} /></span>
+              <div className="dashboard-modal-request-copy">
+                <strong>{request.title}</strong>
+                <p>{request.id} · {request.requester} · {getRequestStatusLabel(request.status)}</p>
+                <span>{request.deadline ? deadlineLabel(request) : "No deadline"}</span>
+              </div>
+              <button type="button" onClick={() => { onClose(); onSelectRequest(request.id); }}>Open <Icon name="chevronRight" size={15} /></button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DashboardCards({ requests, allRequests = requests, notifications = [], onMarkNotificationRead, onSelectFilter, onSelectRequest, currentUser, activeFilter = "all" }) {
+  const [openList, setOpenList] = useState(null);
+  const isReviewer = currentUser?.role === "Legal Reviewer";
+  const isManager = currentUser?.role === "Legal Manager";
+  const isRequester = currentUser?.role === "Requester";
   const totalRequests = requests.length;
-  const pendingRequests = requests.filter((request) => !["Closed", "Archived", "Approved"].includes(request.status)).length;
-  const underReview = requests.filter((request) => !["Closed", "Archived", "Approved", "Waiting for More Information"].includes(request.status)).length;
-  const highRisk = requests.filter((request) => request.riskLevel === "High").length;
-  const awaitingInput = requests.filter((request) => request.status === "Waiting for More Information").length;
+  const pendingRequests = requests.filter((request) => !completedStatuses.has(request.status)).length;
+  const inProgress = requests.filter((request) => !completedStatuses.has(request.status) && request.status !== "Waiting for More Information").length;
+  const returnedToRequester = requests.filter((request) => request.status === "Waiting for More Information").length;
+  const completedRequests = requests.filter((request) => completedStatuses.has(request.status));
+  const dueSoonOrOverdueRequests = requests.filter((request) => {
+    const days = deadlinePosition(request.deadline);
+    return !completedStatuses.has(request.status) && days !== null && days <= 7;
+  });
+  const unassignedRequests = allRequests.filter((request) => {
+    const reviewerIds = request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean);
+    return reviewerIds.length === 0 && !completedStatuses.has(request.status);
+  });
 
   const cards = [
-    { label: "Total matters", value: totalRequests, icon: "inbox", tone: "blue", info: "All legal requests available to your current role.", filter: "all", context: "Current portfolio" },
-    { label: "Active review", value: underReview, icon: "clipboard", tone: "indigo", info: "Matters currently moving through AI, reviewer, manager, or department review.", filter: "under-review", context: `${pendingRequests} open matters` },
-    { label: "Awaiting input", value: awaitingInput, icon: "clock", tone: "amber", info: "Requests paused while Legal Affairs waits for additional information.", filter: "pending", context: "Action may be required" },
-    { label: "High risk", value: highRisk, icon: "warning", tone: "rose", info: "Requests currently carrying a High risk classification.", filter: "high-risk", context: "Priority attention" },
+    {
+      label: isReviewer ? "My assigned requests" : "Total requests",
+      value: isReviewer ? totalRequests : allRequests.length,
+      icon: "inbox",
+      tone: "blue",
+      filter: "all",
+      context: isReviewer ? `${totalRequests} of ${allRequests.length} total submitted` : "All submitted requests",
+    },
+    { label: "Requests in progress", value: inProgress, icon: "clipboard", tone: "indigo", filter: "under-review", context: `${pendingRequests} open requests` },
+    { label: "Returned to Requester", value: returnedToRequester, icon: "clock", tone: "amber", filter: "returned-to-requester", context: "Awaiting requester response" },
+    { label: "Due soon / overdue", value: dueSoonOrOverdueRequests.length, icon: "warning", tone: "rose", filter: "due", context: "Due within 7 days or overdue" },
+    { label: "Completed requests", value: completedRequests.length, icon: "archive", tone: "green", filter: "completed", context: "Approved, closed, or archived" },
   ];
-
-  const workflowStages = [
-    { label: "AI assessment", count: requests.filter((request) => request.status?.includes("AI Review")).length, tone: "blue" },
-    { label: "Legal review", count: requests.filter((request) => request.status === "Under Review").length, tone: "indigo" },
-    { label: "Internal approval", count: requests.filter((request) => request.status?.includes("Approval")).length, tone: "amber" },
-    { label: "Completed", count: requests.filter((request) => ["Approved", "Closed", "Archived"].includes(request.status)).length, tone: "green" },
-  ];
-  const largestStage = Math.max(1, ...workflowStages.map((stage) => stage.count));
-  const recentRequests = [...requests]
-    .sort((first, second) => (Date.parse(second.submittedAt || "") || 0) - (Date.parse(first.submittedAt || "") || 0))
-    .slice(0, 4);
-
   const firstName = currentUser?.name?.split(" ")[0] || "colleague";
 
   return (
@@ -42,15 +105,24 @@ function DashboardCards({ requests, allRequests = requests, onSelectFilter, onSe
         <div>
           <p className="page-kicker">Legal operations centre</p>
           <h2>Good day, {firstName}</h2>
-          <p>Here is the current position of the legal matters in your workspace.</p>
+          <p>{isReviewer ? "Your assigned workload is shown below, with access to the complete request register." : "Here is the current position of the legal requests in your workspace."}</p>
         </div>
-        <div className="dashboard-date"><Icon name="calendar" size={18} /><div><span>Today</span><strong>{new Intl.DateTimeFormat("en-AE", { day: "2-digit", month: "short", year: "numeric" }).format(new Date())}</strong></div></div>
+        <div className="dashboard-summary-actions">
+          {isManager && (
+            <button type="button" className={`unassigned-requests-badge ${activeFilter === "unassigned" ? "is-active" : ""}`} aria-pressed={activeFilter === "unassigned"} onClick={() => { onSelectFilter("unassigned"); setOpenList("unassigned"); }}>
+              <span><Icon name="warning" size={17} /></span>
+              <div><strong>{unassignedRequests.length} unassigned</strong><small>Open request list</small></div>
+              <Icon name="chevronRight" size={16} />
+            </button>
+          )}
+          <div className="dashboard-date"><Icon name="calendar" size={18} /><div><span>Today</span><strong>{new Intl.DateTimeFormat("en-AE", { day: "2-digit", month: "short", year: "numeric" }).format(new Date())}</strong></div></div>
+        </div>
       </div>
 
       <div className="metric-grid">
         {cards.map((card) => (
-          <button key={card.label} type="button" onClick={() => onSelectFilter(card.filter)} className={`metric-card metric-${card.tone}`}>
-            <div className="metric-card-top"><span className="metric-icon"><Icon name={card.icon} size={20} /></span><InfoButton label={`${card.label} information`} description={card.info} /></div>
+          <button key={card.label} type="button" aria-pressed={activeFilter === card.filter} onClick={() => { onSelectFilter(card.filter); if (card.list) setOpenList(card.list); }} className={`metric-card metric-${card.tone} ${activeFilter === card.filter ? "is-active" : ""}`}>
+            <div className="metric-card-top"><span className="metric-icon"><Icon name={card.icon} size={20} /></span></div>
             <p>{card.label}</p>
             <strong>{String(card.value).padStart(2, "0")}</strong>
             <div className="metric-context"><span>{card.context}</span><Icon name="arrowRight" size={16} /></div>
@@ -58,49 +130,43 @@ function DashboardCards({ requests, allRequests = requests, onSelectFilter, onSe
         ))}
       </div>
 
-      <div className="dashboard-detail-grid">
-        <article className="workspace-panel workflow-panel">
-          <div className="panel-heading"><div><p className="page-kicker">Live workload</p><h3>Review pipeline</h3></div><span className="panel-badge">{pendingRequests} active</span></div>
-          <div className="workflow-list">
-            {workflowStages.map((stage) => (
-              <div className="workflow-row" key={stage.label}>
-                <div><span>{stage.label}</span><strong>{stage.count}</strong></div>
-                <div className="workflow-track"><span className={`workflow-fill workflow-${stage.tone}`} style={{ width: `${Math.max(stage.count ? 8 : 0, (stage.count / largestStage) * 100)}%` }} /></div>
-              </div>
+      {isRequester && (
+        <section className="requester-activity-card">
+          <header>
+            <div><p className="page-kicker">Request notifications</p><h3>Updates to your requests</h3></div>
+            <span>{notifications.filter((notification) => !notification.isRead).length} unread</span>
+          </header>
+          <div className="requester-activity-list">
+            {notifications.length === 0 ? (
+              <div className="requester-activity-empty"><Icon name="bell" size={22} /><div><strong>No updates yet</strong><p>Reviewer comments, routing decisions, approvals, and other changes will appear here.</p></div></div>
+            ) : notifications.slice(0, 6).map((notification) => (
+              <button
+                type="button"
+                className={notification.isRead ? "" : "is-unread"}
+                key={notification.id}
+                onClick={async () => {
+                  if (!notification.isRead) await onMarkNotificationRead(notification.id);
+                  if (notification.requestId) onSelectRequest(notification.requestId);
+                }}
+              >
+                <span><Icon name="file" size={17} /></span>
+                <div><strong>{notification.title}</strong><p>{notification.message}</p><time>{notification.createdAtLabel}</time></div>
+                {!notification.isRead && <i aria-label="Unread" />}
+                <Icon name="chevronRight" size={16} />
+              </button>
             ))}
           </div>
-          <p className="panel-footnote"><Icon name="activity" size={15} /> Pipeline values reflect your role-based access.</p>
-        </article>
+        </section>
+      )}
 
-        <article className="workspace-panel recent-panel">
-          <div className="panel-heading"><div><p className="page-kicker">Latest activity</p><h3>Recent matters</h3></div><button type="button" onClick={() => onSelectFilter("all")}>View all <Icon name="arrowRight" size={15} /></button></div>
-          <div className="recent-matter-list">
-            {recentRequests.length === 0 ? (
-              <div className="empty-compact"><Icon name="inbox" size={22} /><span>No matters are available yet.</span></div>
-            ) : recentRequests.map((request) => (
-              <div className="recent-matter" key={request.id}>
-                <span className="recent-file-icon"><Icon name="file" size={18} /></span>
-                <div><strong>{request.title}</strong><p>{request.id} · {request.department}</p></div>
-                <span className={`status-dot-label status-${statusTone(request.status)}`}><i />{request.status}</span>
-              </div>
-            ))}
-          </div>
-        </article>
-      </div>
-
-      {currentUser?.role === "Legal Reviewer" && (
-        <div className="dashboard-request-register">
-          <RequestTable
-            requests={allRequests}
-            onSelectRequest={onSelectRequest}
-            canOpenDetails={true}
-            canOpenRequest={(request) => request.assignedReviewerId === currentUser.id}
-            currentUserId={currentUser.id}
-            kicker="Institutional request register"
-            title="All legal requests"
-            description="Search and filter the complete request portfolio. Detailed documents and reviewer actions remain limited to matters assigned to you."
-          />
-        </div>
+      {openList === "unassigned" && (
+        <RequestListModal
+          title="Unassigned requests"
+          description="Open requests that do not yet have a Legal Reviewer assigned."
+          requests={unassignedRequests}
+          onClose={() => setOpenList(null)}
+          onSelectRequest={onSelectRequest}
+        />
       )}
     </section>
   );
