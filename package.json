@@ -1,0 +1,15 @@
+{
+  "name": "agent-legal-affairs",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix Code ci && npm --prefix Code run build && npm --prefix server ci",
+    "start": "npm --prefix server start",
+    "db:init": "npm --prefix server run db:init",
+    "db:seed": "npm --prefix server run db:seed",
+    "db:seed-demo": "npm --prefix server run db:seed-demo"
+  },
+  "engines": {
+    "node": ">=22.12.0 <25"
+  }
+}
