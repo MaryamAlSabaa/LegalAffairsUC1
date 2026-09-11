@@ -87,40 +87,37 @@ function ReviewStatusCard({
   );
 }
 
-function LegalTrackerDetails({ request }) {
+function RequestOverviewFields({ request }) {
   const tracker = getLegalTrackerRecord(request);
+  const sameEndUser = tracker.endUser === request.requester;
   const fields = [
+    ["Category / Matter Type", tracker.matterType === request.categoryName
+      ? tracker.matterType
+      : [request.categoryName, tracker.matterType].filter(Boolean).join(" / ")],
+    [sameEndUser ? "Requester / End User" : "Requester", request.requester],
+    ...(!sameEndUser ? [["End User", tracker.endUser]] : []),
+    ["Party Name", tracker.partyName],
+    ["Assigned Reviewers", tracker.responsibleLawyer],
+    ["Priority", request.priority],
+    ["Risk Level", request.riskLevel],
     ["Date Received", tracker.dateReceived],
     ["Deadline", tracker.deadline],
-    ["Party Name", tracker.partyName],
-    ["End User", tracker.endUser],
-    ["Matter Type", tracker.matterType],
-    ["Responsible Lawyer (reviewer)", tracker.responsibleLawyer],
+    ["Legal Department Status", tracker.legalDepartmentStatus === "C" ? "Closed" : tracker.legalDepartmentStatus === "O" ? "Open" : tracker.legalDepartmentStatus],
+    ["End User Status", tracker.endUserStatus === "C" ? "Closed" : tracker.endUserStatus === "O" ? "Open" : tracker.endUserStatus],
+    ["Completion / AnaSign Signature", tracker.completionAnaSign, true],
     ["Comments / Notes", tracker.commentsNotes, true],
     ["Last Update / Actions Taken", tracker.lastUpdateActionsTaken, true],
-    ["Legal Department Status (C/O)", tracker.legalDepartmentStatus],
-    ["End User Status (C/O)", tracker.endUserStatus],
-    ["Date of Completion / AnaSign Signature", tracker.completionAnaSign, true],
   ];
 
   return (
-    <div className="matter-overview-card legal-tracker-details">
-      <div className="legal-tracker-heading">
-        <div>
-          <p className="page-kicker">Legal request register</p>
-          <h3>Legal Tracker Information</h3>
+    <dl className="request-overview-fields">
+      {fields.map(([label, value, isWide]) => (
+        <div className={isWide ? "request-overview-field is-wide" : "request-overview-field"} key={label}>
+          <dt>{label}</dt>
+          <dd>{value || "Not recorded"}</dd>
         </div>
-        <span>C = Closed · O = Open</span>
-      </div>
-      <div className="legal-tracker-grid">
-        {fields.map(([label, value, isWide]) => (
-          <div className={`legal-tracker-field ${isWide ? "legal-tracker-field-wide" : ""}`} key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
-      </div>
-    </div>
+      ))}
+    </dl>
   );
 }
 
@@ -315,40 +312,7 @@ function RequestDetails({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 text-sm text-slate-700">
-              <p>
-                <span className="font-semibold">Category:</span>{" "}
-                {request.categoryCode} - {request.categoryName}
-              </p>
-              <p>
-                <span className="font-semibold">Department:</span>{" "}
-                {request.department}
-              </p>
-              <p>
-                <span className="font-semibold">Requester:</span>{" "}
-                {request.requester}
-              </p>
-              <p>
-                <span className="font-semibold">Assigned Reviewers:</span>{" "}
-                {request.assignedReviewer || "Not assigned"}
-              </p>
-              <p>
-                <span className="font-semibold">Priority:</span>{" "}
-                {request.priority}
-              </p>
-              <p>
-                <span className="font-semibold">Risk Level:</span>{" "}
-                {request.riskLevel}
-              </p>
-              <p>
-                <span className="font-semibold">Deadline:</span>{" "}
-                {request.deadline}
-              </p>
-              <p>
-                <span className="font-semibold">Sent Time:</span>{" "}
-                {request.submittedAt || "Not recorded"}
-              </p>
-            </div>
+            <RequestOverviewFields request={request} />
 
             <div className="mt-6">
               <h4 className="font-semibold text-slate-900">Supporting Documents</h4>
@@ -387,8 +351,6 @@ function RequestDetails({
               </ul>
             </div>
           </div>
-
-          <LegalTrackerDetails request={request} />
 
           {isRequester && request.status === "Waiting for More Information" && (
             <RequestPdfResubmissionPanel

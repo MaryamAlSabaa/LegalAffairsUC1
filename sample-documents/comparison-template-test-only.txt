@@ -1,0 +1,13 @@
+FICTIONAL REFERENCE TEMPLATE - TEST USE ONLY - VERSION 1.0
+This is synthetic reference material for a sandbox comparison. It is not an approved KU template or a statement of KU policy. Use the approval checkbox only to simulate the test workflow in a non-production request.
+
+1. Term and renewal: A twelve-month term. Renewal requires mutual written agreement. Any price adjustment requires prior written approval.
+2. Payment and acceptance: Payment follows documented acceptance of agreed deliverables. Acceptance criteria and milestones must be agreed before delivery. Additional charges require an approved written change order.
+3. Data protection: Process personal data only for the agreed service and on documented instructions. Obtain written consent for subprocessors and hosting changes. Notify the University of a confirmed data incident within 48 hours. Return or delete all data within 30 days of termination and provide written confirmation.
+4. Confidentiality: Protect confidential information regardless of marking. Bind subcontractors to equivalent obligations. Confidentiality obligations survive termination for five years, with ongoing protection for personal data.
+5. Ownership: The University retains its data and owns project-specific reports and deliverables. The Supplier retains pre-existing tools and grants the licenses necessary to use the deliverables.
+6. Publication: Publication of research results or use of the University name requires prior written approval.
+7. Liability: Liability terms must be proportionate and mutual. Neither party excludes responsibility for its own fraud or willful misconduct. Liability allocations for confidentiality and data incidents require explicit agreement.
+8. Exit: The University may terminate for convenience on 30 days notice. Unused prepaid fees are refundable. Provide data export and reasonable transition assistance.
+9. Disputes: Governing law and an agreed dispute resolution forum must be specified before signature.
+10. Authority and changes: Identify authorized signatories and required internal approvals. Amendments require written agreement by both parties. Website terms cannot unilaterally override signed terms.

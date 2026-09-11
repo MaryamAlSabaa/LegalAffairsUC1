@@ -615,6 +615,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .reviewer-assignment-footer > span { color: var(--text-muted); font-size: 9px; font-weight: 650; }
 .reviewer-assignment-footer > div { display: flex; gap: 8px; }
 .matter-overview-card { padding: 22px; }
+.request-overview-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; margin: 22px 0 0; border-top: 1px solid var(--border); }
+.request-overview-field { min-width: 0; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.request-overview-field.is-wide { grid-column: 1 / -1; }
+.request-overview-field dt { color: var(--text-soft); font-size: 11px; font-weight: 600; }
+.request-overview-field dd { margin: 5px 0 0; color: var(--text); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .request-overview-fields { grid-template-columns: 1fr; } }
 .legal-tracker-details { padding: 0; overflow: hidden; }
 .legal-tracker-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 21px; border-bottom: 1px solid var(--border); background: var(--surface-subtle); }
 .legal-tracker-heading h3 { margin-top: 2px; color: var(--text); font-size: 15px; font-weight: 700; }
