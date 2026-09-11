@@ -666,7 +666,56 @@ router.post("/engine/rebuild", requireRoles("Admin User", "Owner"), async (_req,
   } catch (error) { next(error); }
 });
 
-router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester"), async (req, res, next) => {
+router.put("/requests/:requestId/review-references", requireRoles("Legal Reviewer", "Legal Manager"), async (req, res, next) => {
+  try {
+    if (!await canAccessRequest(req.user, req.params.requestId)) return res.sendStatus(404);
+    const references = req.body.references;
+    if (!Array.isArray(references) || references.length > 5 || references.some(r =>
+      !r || typeof r.title !== "string" || !r.title.trim() || r.title.length > 200 ||
+      typeof r.text !== "string" || !r.text.trim() || r.text.length > 40000 || r.approved !== true)) {
+      return res.status(400).json({ error: "Provide up to five approved templates, each with a title and at most 40,000 characters of reference text." });
+    }
+    const normalized = references.map(r => ({ id: crypto.randomUUID(), title: r.title.trim(), text: r.text.trim(), approved: true, approvedBy: req.user.id }));
+    await query("update legal_requests set review_references=$1::jsonb where id=$2", [JSON.stringify(normalized), req.params.requestId]);
+    res.json(normalized);
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/publish-response", requireRoles("Legal Reviewer", "Legal Manager"), async (req, res, next) => {
+  try {
+    if (!await canAccessRequest(req.user, req.params.requestId)) return res.sendStatus(404);
+    const response = req.body.response;
+    if (req.body.confirmed !== true || typeof response !== "string" || !response.trim() || response.length > 20000) {
+      return res.status(400).json({ error: "Review and confirm a response of 1 to 20,000 characters before sharing." });
+    }
+    const publication = await transaction(async client => {
+      const record = await client.query("select requester_id from legal_requests where id=$1 for update", [req.params.requestId]);
+      const saved = await client.query("insert into legal_response_publications(request_id,response_text,published_by) values($1,$2,$3) returning id,published_at", [req.params.requestId,response.trim(),req.user.id]);
+      const shared = { id: saved.rows[0].id, text: response.trim(), publishedBy: req.user.name, publishedAt: saved.rows[0].published_at };
+      await client.query("update legal_requests set shared_response=$1::jsonb where id=$2", [JSON.stringify(shared),req.params.requestId]);
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name) values($1,$2,$3,$4)", [req.params.requestId,"Legal response reviewed and shared with requester",req.user.id,req.user.name]);
+      await createNotifications(client, [{ recipientId: record.rows[0].requester_id, requestId: req.params.requestId, title: "Legal response available", message: "Legal Affairs has reviewed and shared a response to your request." }]);
+      return shared;
+    });
+    res.json(publication);
+  } catch (error) { next(error); }
+});
+
+router.post("/requests/:requestId/queue-review", requireRoles("Legal Reviewer", "Legal Manager"), async (req,res,next) => {
+  try {
+    if (!await canAccessRequest(req.user,req.params.requestId)) return res.sendStatus(404);
+    if (config.useMockAiReview || !config.gemini.apiKey) return res.status(503).json({error:"Actual AI analysis is not configured. Configure GEMINI_API_KEY and set USE_MOCK_AI_REVIEW=false on the server."});
+    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order)
+      select request_id,id,(extract(epoch from now())*1000)::bigint from request_documents
+      where request_id=$1 and is_current=true and mime_type='application/pdf'
+      on conflict(request_id,document_id) do update set status='queued',last_error=null,completed_at=null
+      where ai_review_jobs.status <> 'processing' returning id`, [req.params.requestId]);
+    if (!result.rowCount) return res.status(409).json({error:"Upload a PDF first, or wait for the current review to finish."});
+    res.json({queued:result.rowCount});
+  } catch(error) {next(error);}
+});
+
+router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester", "Legal Reviewer", "Legal Manager"), async (req, res, next) => {
   let claimedJob = null;
   try {
     claimedJob = await transaction(async (client) => {
@@ -677,10 +726,10 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
          from ai_review_jobs j
          join legal_requests lr on lr.id=j.request_id
          join request_documents d on d.id=j.document_id
-         where j.status='queued' and d.mime_type='application/pdf' and ($1<>'Requester' or lr.requester_id=$2)
+         where j.status='queued' and d.is_current=true and d.mime_type='application/pdf' and ($1<>'Requester' or lr.requester_id=$2) and ($3::text is null or j.request_id=$3)
          order by case lr.priority when 'Urgent' then 1 when 'High' then 2 when 'Medium' then 3 else 4 end,j.queue_order
          for update skip locked limit 1`,
-        [req.user.role, req.user.id],
+        [req.user.role, req.user.id, req.body.requestId || null],
       );
       if (!job.rows[0]) return null;
       await client.query(
@@ -698,6 +747,11 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
 
     const criteriaResult = await query("select id,criteria from legal_review_criteria order by sort_order");
     const criteria = criteriaResult.rows.map((item) => item.criteria);
+    const context = await query("select title,description,category_code,review_references from legal_requests where id=$1", [claimedJob.request_id]);
+    const categories = await query("select code,name from legal_categories order by code");
+    claimedJob.reviewContext = { title: context.rows[0].title, description: context.rows[0].description,
+      submittedCategory: context.rows[0].category_code, categories: categories.rows,
+      approvedTemplates: context.rows[0].review_references || [] };
     const review = await reviewLegalPdf(claimedJob, criteria, safeStoragePath(claimedJob.storage_path));
     const criteriaByName = new Map(criteriaResult.rows.map((item) => [item.criteria.toLowerCase(), item.id]));
 
@@ -713,6 +767,7 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester")
         );
       }
 
+      await client.query("update request_documents set ai_review_result=$1::jsonb where id=$2", [JSON.stringify(review), claimedJob.document_id]);
       await client.query("delete from document_ai_suggestions where document_id=$1", [claimedJob.document_id]);
       const suggestions = [
         ...review.risk_highlights.map((item) => ({ page: item?.page, type: `Risk: ${item?.risk_level || "review"}`, text: `${item?.term || "Term"}: ${item?.reason || "Review required"}` })),

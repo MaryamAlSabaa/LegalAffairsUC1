@@ -68,3 +68,17 @@ npm start
 Other authorized users can then open `http://SERVER_IP:4000`. The host PC must remain powered on and connected, and Windows Firewall must permit inbound TCP port 4000 on the appropriate KU network profile. Keep PostgreSQL port 5432 private; browser users need only port 4000.
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for secure network configuration, HTTPS, backups, and production operation.
+
+## Internal AI review and requester responses
+
+Legal Reviewers and Legal Managers have an Internal legal review workspace on request details. Draft classifications, summaries, clauses, risks, checklists, template comparisons, review notes and first-draft responses are restricted in both the API and UI. Other roles do not receive internal AI fields, including document-level and previous review results.
+
+For existing databases, apply `server/db/review-workflow.sql` before starting the updated server (the changes are also included in `npm run db:init`). The local database migration was applied during development.
+
+To perform actual analysis, configure `GEMINI_API_KEY` and set `USE_MOCK_AI_REVIEW=false` in the server environment, then restart the server. Review supports PDFs; Office attachments remain available for manual review. Mock mode does not perform legal analysis, and Run AI review reports configuration requirements instead of presenting mock output as real analysis.
+
+Under Approved templates for comparison, legal staff can supply up to five approved template texts with title/version and explicitly confirm their approval. These references are scoped to the request and passed to Gemini with request context and the available classification categories. No template comparison is claimed without supplied reference content. Classification is a suggestion and does not overwrite the submitted category. Each PDF result is retained separately. There is no automatically populated institutional template or precedent library.
+
+Legal staff edit the Response to requester draft preview, confirm the exact text, and choose Confirm and share response. Only that text becomes requester-visible; internal findings are never automatically published. Sharing stores an immutable publication record, updates the displayed response, creates an audit entry and an in-app notification. Subsequent AI reviews do not change the previously shared response. No email is sent by this sharing action.
+
+Validation: `node --test server/tests/review-workflow.test.js`, `npm run check` in server, and `npm run build` in Code.

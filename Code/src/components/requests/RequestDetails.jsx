@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import AiLegalReviewPanel from "../review/AiLegalReviewPanel";
+import InternalReviewWorkspace from "../review/InternalReviewWorkspace";
 
 import ContractChecklist from "../review/ContractChecklist";
 import ReviewerComments from "../review/ReviewerComments";
@@ -225,6 +225,7 @@ function RequestDetails({
   onDeleteRequest,
   onUpdateDocuments,
 }) {
+  const canViewInternalReview = ["Legal Reviewer", "Legal Manager"].includes(currentUser.role);
   // selectedDocument stores the PDF the user clicked, so we can show it in the popup.
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [showReviewerAssignment, setShowReviewerAssignment] = useState(false);
@@ -395,18 +396,23 @@ function RequestDetails({
               onUpdateDocuments={onUpdateDocuments}
             />
           )}
-          {request.previousAiReviewResult && (
+          {canViewInternalReview && request.previousAiReviewResult && (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
               <h3 className="font-bold text-slate-900">Previous PDF AI Review</h3>
               <p className="mt-1 text-sm text-slate-600">The previous PDF result is kept for comparison while the new PDF is reviewed.</p>
               <p className="mt-3 text-sm text-slate-700">{request.previousAiSummary || request.previousAiReviewResult.draft_review_note || "Previous AI review result archived."}</p>
             </div>
           )}
-          <AiLegalReviewPanel review={request.aiReviewResult} />
+          {canViewInternalReview && <InternalReviewWorkspace request={request} />}
+          {!canViewInternalReview && request.sharedResponse && <section className="rounded-2xl border border-green-200 bg-white p-5">
+            <h3 className="font-bold">Response from Legal Affairs</h3>
+            <p className="mt-3 whitespace-pre-wrap">{request.sharedResponse.text}</p>
+            <p className="mt-2 text-xs">Shared by {request.sharedResponse.publishedBy} on {new Date(request.sharedResponse.publishedAt).toLocaleString()}</p>
+          </section>}
           <ReviewStatusCard
             request={{ ...request, managerDecision, departmentDecision }}
             document={firstDocument}
-            showChecklistProgress={!isRequester}
+            showChecklistProgress={canViewInternalReview}
           />
           {canManageManagerActions && (
             <ManagerActions
@@ -446,7 +452,7 @@ function RequestDetails({
           />
         </div>
 
-        {!isRequester && (
+        {canViewInternalReview && (
           <ContractChecklist
             requestId={request.id}
             document={firstDocument}

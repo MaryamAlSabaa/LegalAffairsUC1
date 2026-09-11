@@ -53,7 +53,7 @@ function AiLegalReviewPanel({ review }) {
           </p>
         </div>
         <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-blue-700">
-          {review.ai_mode === "gemini" ? "Gemini AI" : "AI Review"}
+          {review.ai_mode === "gemini" ? "Gemini AI" : "Mock preview - no AI analysis"}
         </span>
       </div>
 
@@ -106,6 +106,8 @@ function AiLegalReviewPanel({ review }) {
       <div className="mt-5 rounded-2xl bg-white p-4 text-sm text-slate-700">
         {activeTab === "overview" && (
           <div className="space-y-4">
+            <div><h4 className="font-bold">Document summary</h4><p className="whitespace-pre-wrap">{review.document_summary || "No document summary available."}</p></div>
+            <div><h4 className="font-bold">Classification rationale</h4><p>{review.classification_reason || "No AI classification available."}</p></div>
             <div>
               <h4 className="font-bold text-slate-900">University Obligations</h4>
               <ul className="mt-2 list-disc space-y-1 pl-5">

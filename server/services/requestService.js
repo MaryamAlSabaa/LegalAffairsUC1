@@ -1,3 +1,4 @@
+import { restrictReview } from "./reviewVisibility.js";
 import { query } from "../db.js";
 
 function accessFilter(user, startIndex = 1) {
@@ -152,9 +153,12 @@ export async function listRequests(user) {
       type: document.mime_type,
       url: `/api/documents/${document.id}/file`,
       isCurrent: document.is_current,
+      aiReviewResult: document.ai_review_result,
       checklist: (checklistByDocument[document.id] || []).map((item) => ({ id: item.id, criteria: item.criteria, page: item.page, checked: item.checked, note: item.note })),
       aiSuggestions: (suggestionsByDocument[document.id] || []).map((item) => ({ page: item.page, type: item.suggestion_type, text: item.suggestion_text })),
     })),
+    reviewReferences: row.review_references,
+    sharedResponse: row.shared_response,
     aiSummary: row.ai_summary,
     aiReviewResult: row.ai_review_result,
     previousDocumentId: row.previous_document_id,
@@ -179,7 +183,7 @@ export async function listRequests(user) {
       createdAt: formatDateTime(jobsByRequest[row.id][0].created_at),
       updatedAt: formatDateTime(jobsByRequest[row.id][0].updated_at),
     } : null,
-  }));
+  })).map((request) => restrictReview(request, user));
 }
 
 export async function getDocumentForUser(user, documentId) {
@@ -247,5 +251,5 @@ export async function listRequestOverview(user) {
     completedAt: row.completed_at ? formatDateTime(row.completed_at) : "Not completed",
     anaSignSignature: row.anasign_signature || "Not signed",
     aiReviewJob: row.job_status ? { status: row.job_status, currentStep: row.job_current_step } : null,
-  }));
+  })).map((request) => restrictReview(request, user));
 }
