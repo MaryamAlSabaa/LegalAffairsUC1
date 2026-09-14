@@ -1,8 +1,14 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
+// Resolve the backend's environment independently of the launch directory.
+// Deployment variables retain precedence over values in the local file.
+dotenv.config({
+  path: process.env.DOTENV_CONFIG_PATH || path.join(serverDirectory, ".env"),
+  quiet: true,
+});
 const databaseUrl = process.env.DATABASE_URL?.trim();
 
 if (!databaseUrl) {

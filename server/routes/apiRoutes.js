@@ -707,7 +707,7 @@ router.post("/requests/:requestId/queue-review", requireRoles("Legal Reviewer", 
     const useApprovedTemplates = req.body?.useApprovedTemplates ?? false;
     if (typeof useApprovedTemplates !== "boolean") return res.status(400).json({error:"Template comparison must be enabled or disabled."});
     if (!await canAccessRequest(req.user,req.params.requestId)) return res.sendStatus(404);
-    if (config.useMockAiReview || !config.gemini.apiKey) return res.status(503).json({error:"Actual AI analysis is not configured. Configure GEMINI_API_KEY and set USE_MOCK_AI_REVIEW=false on the server."});
+    if (config.useMockAiReview || !config.gemini.apiKey) return res.status(503).json({error:"Actual AI analysis is not configured. Configure GEMINI_API_KEY and USE_MOCK_AI_REVIEW=false in server/.env or the API service environment, then restart the backend."});
     if (useApprovedTemplates) {
       const source = await query("select review_references from legal_requests where id=$1", [req.params.requestId]);
       if (!source.rows[0]?.review_references?.some(reference => reference.approved === true && reference.title?.trim() && reference.text?.trim())) {
