@@ -3,7 +3,15 @@ import { getReadableErrorMessage } from "../../utils/errorMessage";
 import Icon from "../common/Icon";
 import AuthShell from "./AuthShell";
 
-const demoAccounts = ["requester", "reviewer", "manager", "approver", "admin"];
+const demoAccounts = [
+  { username: "requester", role: "Requester" },
+  { username: "reviewer", role: "Legal Reviewer" },
+  { username: "manager", role: "Legal Manager" },
+  { username: "approver", role: "Department Approver" },
+  { username: "admin", role: "Administrator" },
+  { username: "owner", role: "Platform Owner" },
+];
+const demoPassword = "password123";
 
 function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onToggleTheme, backendMessage }) {
   const [username, setUsername] = useState("");
@@ -12,7 +20,6 @@ function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onTog
   const [errorMessage, setErrorMessage] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
-  const showDemoAccounts = import.meta.env.DEV;
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -37,8 +44,8 @@ function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onTog
   }
 
   function chooseDemoAccount(account) {
-    setUsername(account === "manager" ? "graham.cowan" : account);
-    setPassword("password123");
+    setUsername(account.username);
+    setPassword(demoPassword);
     setErrorMessage("");
     setFieldErrors({});
   }
@@ -111,17 +118,25 @@ function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onTog
         </button>
       </form>
 
-      {showDemoAccounts && (
-        <div className="demo-access">
-          <div className="demo-divider"><span>Local demonstration access</span></div>
-          <div className="demo-account-list">
+        <section className="demo-access" aria-label="Demo sign-in credentials">
+          <div className="demo-divider"><span>Demo sign-in credentials</span></div>
+          <p className="demo-password">Password for all demo accounts: <code>{demoPassword}</code></p>
+          <div className="demo-credential-list">
             {demoAccounts.map((account) => (
-              <button type="button" key={account} onClick={() => chooseDemoAccount(account)}>{account}</button>
+              <button
+                type="button"
+                key={account.username}
+                disabled={isLoading}
+                onClick={() => chooseDemoAccount(account)}
+                aria-label={`Use ${account.role} demo credentials: ${account.username}`}
+              >
+                <span>{account.role}</span>
+                <code>{account.username}</code>
+              </button>
             ))}
           </div>
-          <p>Select a role to prefill its seeded local account.</p>
-        </div>
-      )}
+          <p>Select an account to fill in the username and password.</p>
+        </section>
 
       <p className="auth-switch">Need access? <button type="button" onClick={onShowRegister}>Create a requester account</button></p>
     </AuthShell>

@@ -282,10 +282,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .demo-divider { display: flex; align-items: center; color: var(--text-muted); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
 .demo-divider::before, .demo-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
 .demo-divider span { padding: 0 10px; }
-.demo-account-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 13px; }
-.demo-account-list button { padding: 6px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-soft); background: var(--surface-subtle); cursor: pointer; font-size: 9.5px; text-transform: capitalize; }
-.demo-account-list button:hover { color: var(--ku-blue); border-color: #adc5e5; }
-.demo-access > p { margin: 9px 0 0; color: var(--text-muted); font-size: 9px; text-align: center; }
+.demo-credential-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.demo-credential-list button { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-soft); background: var(--surface-subtle); cursor: pointer; text-align: left; }
+.demo-credential-list button span { font-size: 10px; }
+.demo-credential-list button code { color: var(--text); font-size: 12px; font-weight: 650; }
+.demo-credential-list button:hover:not(:disabled) { color: var(--ku-blue); border-color: #adc5e5; }
+.demo-credential-list button:disabled { cursor: wait; opacity: .6; }
+.demo-access > p { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; text-align: center; }
+.demo-access > .demo-password { margin-top: 14px; color: var(--text-soft); font-size: 11px; }
+.demo-password code { display: inline-block; margin-left: 4px; padding: 3px 6px; border-radius: 5px; color: var(--text); background: var(--surface-subtle); font-size: 12px; font-weight: 650; }
 .auth-switch { margin: 23px 0 0; color: var(--text-muted); font-size: 10.5px; text-align: center; }
 .auth-footer { position: absolute; bottom: 17px; margin: 0; color: var(--text-muted); font-size: 9px; }
 .password-guidance { display: flex; align-items: center; gap: 6px; margin: -5px 0 0; color: var(--text-muted); font-size: 9.5px; }
