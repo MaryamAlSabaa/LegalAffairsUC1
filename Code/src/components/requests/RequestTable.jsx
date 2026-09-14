@@ -311,8 +311,8 @@ function RequestTable({
                   <th><SortButton label="Responsible Lawyer (reviewer)" column="assignedReviewer" sortConfig={sortConfig} onSort={handleSort} /></th>
                   <th>Comments / Notes</th>
                   <th>Last Update / Actions Taken</th>
-                  <th>Legal Department Status (C/O)</th>
-                  <th>End User Status (C/O)</th>
+                  <th title="Legal Affairs closure status. C = Closed; O = Open.">Legal Department Status</th>
+                  <th title="End-user closure status. C = Closed; O = Open. Currently updated together with Legal Department Status.">End User Status</th>
                   <th>Date of Completion / AnaSign Signature</th>
                 </>
               ) : (
@@ -349,8 +349,8 @@ function RequestTable({
                         <td><span>{tracker.responsibleLawyer}</span></td>
                         <td className="tracker-long-text"><span>{tracker.commentsNotes}</span></td>
                         <td className="tracker-long-text"><span>{tracker.lastUpdateActionsTaken}</span></td>
-                        <td><span className={`tracker-co-badge ${tracker.legalDepartmentStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.legalDepartmentStatus}</span></td>
-                        <td><span className={`tracker-co-badge ${tracker.endUserStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.endUserStatus}</span></td>
+                        <td><span className={`tracker-co-badge ${tracker.legalDepartmentStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.legalDepartmentStatus === "C" ? "Closed" : "Open"}</span></td>
+                        <td><span className={`tracker-co-badge ${tracker.endUserStatus === "C" ? "is-closed" : "is-open"}`}>{tracker.endUserStatus === "C" ? "Closed" : "Open"}</span></td>
                         <td className="tracker-long-text"><span>{tracker.completionAnaSign}</span></td>
                       </>
                     ) : (

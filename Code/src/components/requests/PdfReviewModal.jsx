@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import { fetchPdfDocument, pdfPreviewErrorMessage } from "../../services/pdfDocument";
+import { canViewInternalReview } from "../../utils/permissions";
+import DocumentDownloadButton from "./DocumentDownloadButton";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -34,10 +37,8 @@ function PdfPageCanvas({ pdfDocument, pageNumber, pageRef }) {
         renderTask = page.render({ canvasContext: context, viewport });
         await renderTask.promise;
       } catch (error) {
-        if (error?.name === "RenderingCancelledException") return;
-        setRenderError(
-          error instanceof Error ? error.message : "Could not render this page.",
-        );
+        if (isCancelled || error?.name === "RenderingCancelledException") return;
+        setRenderError("This page could not be displayed. Reopen the preview and try again.");
       }
     }
 
@@ -70,30 +71,25 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
   const [pageCount, setPageCount] = useState(0);
   const [viewerStatus, setViewerStatus] = useState("Loading PDF preview...");
   const [viewerError, setViewerError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
+  const documentUrl = document?.url;
 
   useEffect(() => {
     let isCancelled = false;
     let loadingTask = null;
+    const controller = new AbortController();
 
     async function loadPdf() {
-      if (!document?.url) {
-        setViewerError("No PDF URL is available for this document.");
-        return;
-      }
-
       try {
         setPdfDocument(null);
         setPageCount(0);
         setViewerError("");
         setViewerStatus("Loading PDF preview...");
 
-        // PDF.js fetches and renders the PDF into canvases. This avoids the
-        // browser's built-in PDF plugin, which can download PDFs on some setups.
-        loadingTask = pdfjsLib.getDocument({
-          url: document.url,
-          // The API authorizes every PDF request with the user's session cookie.
-          withCredentials: true,
-        });
+        // Read API errors before handing the authenticated PDF bytes to the renderer.
+        const bytes = await fetchPdfDocument(documentUrl, { signal: controller.signal });
+        if (isCancelled) return;
+        loadingTask = pdfjsLib.getDocument({ data: bytes });
 
         const loadedPdf = await loadingTask.promise;
 
@@ -105,11 +101,7 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
       } catch (error) {
         if (isCancelled) return;
 
-        setViewerError(
-          error instanceof Error
-            ? error.message
-            : "Could not display the PDF inside the app.",
-        );
+        setViewerError(pdfPreviewErrorMessage(error));
         setViewerStatus("");
       }
     }
@@ -118,21 +110,24 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
 
     return () => {
       isCancelled = true;
-      if (loadingTask) loadingTask.destroy();
+      controller.abort();
+      if (loadingTask) loadingTask.destroy().catch(() => {});
     };
-  }, [document]);
+  }, [documentUrl, retryCount]);
 
   if (viewerError) {
     return (
       <div className="flex h-full min-h-[50vh] items-center justify-center p-6">
-        <div className="max-w-xl rounded-2xl border border-red-200 bg-red-50 p-5 text-center">
+        <div role="alert" className="max-w-xl rounded-2xl border border-red-200 bg-red-50 p-5 text-center">
           <h3 className="font-bold text-red-800">PDF preview could not load</h3>
           <p className="mt-2 text-sm text-red-700">{viewerError}</p>
-          <p className="mt-3 text-xs text-red-700">
-            The app now uses PDF.js to avoid forced downloads. If this message
-            appears, check that the PDF URL is reachable from localhost and that
-            the central document API allows authenticated read access.
-          </p>
+          <button
+            type="button"
+            className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+            onClick={() => setRetryCount((count) => count + 1)}
+          >
+            Retry preview
+          </button>
         </div>
       </div>
     );
@@ -164,11 +159,12 @@ function BrowserIndependentPdfViewer({ document, pageRefs }) {
   );
 }
 
-function PdfReviewModal({ document, onClose }) {
+function PdfReviewModal({ document, currentUser, onClose }) {
+  const pageRefs = useRef({});
   if (!document) return null;
 
-  const aiSuggestions = document.aiSuggestions || [];
-  const pageRefs = useRef({});
+  const showAiSuggestions = canViewInternalReview(currentUser?.role);
+  const aiSuggestions = showAiSuggestions ? document.aiSuggestions || [] : [];
 
   function goToPdfPage(page) {
     const pageNumber = Number.parseInt(String(page), 10);
@@ -193,10 +189,12 @@ function PdfReviewModal({ document, onClose }) {
                 {document.name}
               </h2>
               <p className="text-sm text-slate-500">
-                PDF.js preview with AI page suggestions.
+                {showAiSuggestions ? "PDF preview with AI page suggestions." : "Secure PDF preview."}
               </p>
             </div>
 
+            <div className="flex flex-wrap items-start gap-2">
+            {showAiSuggestions && <DocumentDownloadButton document={document} />}
             <button
               type="button"
               className="shrink-0 rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white hover:bg-slate-700"
@@ -204,13 +202,14 @@ function PdfReviewModal({ document, onClose }) {
             >
               Close PDF View
             </button>
+            </div>
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_390px]">
+        <div className={`grid min-h-0 flex-1 grid-cols-1 ${showAiSuggestions ? "xl:grid-cols-[minmax(0,1fr)_390px]" : ""}`}>
           <BrowserIndependentPdfViewer document={document} pageRefs={pageRefs} />
 
-          <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-slate-50 p-4">
+          {showAiSuggestions && <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-slate-50 p-4">
             <div className="shrink-0 pb-3">
               <h3 className="text-base font-bold text-slate-900">
                 AI Suggestions by Page
@@ -249,7 +248,7 @@ function PdfReviewModal({ document, onClose }) {
                 </article>
               ))}
             </div>
-          </aside>
+          </aside>}
         </div>
       </div>
     </div>

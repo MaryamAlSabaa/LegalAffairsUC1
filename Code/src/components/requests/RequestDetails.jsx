@@ -7,12 +7,15 @@ import ReviewerRoutingPanel from "./ReviewerRoutingPanel";
 import DepartmentApprovalPanel from "./DepartmentApprovalPanel";
 import ManagerActions from "./ManagerActions";
 import PdfReviewModal from "./PdfReviewModal";
+import DocumentDownloadButton from "./DocumentDownloadButton";
+import RequestProgressTimeline from "./RequestProgressTimeline";
 import RequestPdfResubmissionPanel from "./RequestPdfResubmissionPanel";
 import Icon from "../common/Icon";
 import { getDocumentTypeLabel, isPdfDocument } from "../../utils/documentTypes";
 import { isAvailableLegalReviewer } from "../../config/reviewTeam";
 import { getLegalTrackerRecord } from "../../utils/legalTracker";
 import { getRequestStatusLabel } from "../../utils/requestStatus";
+import { canViewInternalReview as hasInternalReviewAccess } from "../../utils/permissions";
 
 function ReviewStatusCard({
   request,
@@ -222,9 +225,9 @@ function RequestDetails({
   onDeleteRequest,
   onUpdateDocuments,
 }) {
-  const canViewInternalReview = ["Legal Reviewer", "Legal Manager"].includes(currentUser.role);
-  // selectedDocument stores the PDF the user clicked, so we can show it in the popup.
-  const [selectedDocument, setSelectedDocument] = useState(null);
+  const canViewInternalReview = hasInternalReviewAccess(currentUser?.role);
+  // Keep only the selection so refreshed suggestions and permissions reach the popup.
+  const [selectedDocumentId, setSelectedDocumentId] = useState(null);
   const [showReviewerAssignment, setShowReviewerAssignment] = useState(false);
 
   // These two pieces of state make the status card update immediately after workflow saves.
@@ -258,6 +261,7 @@ function RequestDetails({
   }
 
   const firstDocument = request.documents[0];
+  const selectedDocument = request.documents.find((document) => (document.id || document.url) === selectedDocumentId);
   const isRequester = currentUser?.role === "Requester";
   const availableReviewers = users.filter(isAvailableLegalReviewer);
   const assignedReviewerCount = (request.assignedReviewerIds || [request.assignedReviewerId].filter(Boolean)).length;
@@ -283,7 +287,9 @@ function RequestDetails({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      {canViewInternalReview && <RequestProgressTimeline request={request} />}
+
+      <div className={`grid grid-cols-1 ${canViewInternalReview ? "xl:grid-cols-3" : ""} gap-6`}>
         <div className="xl:col-span-2 space-y-6">
           <div className="matter-overview-card">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
@@ -338,12 +344,15 @@ function RequestDetails({
                     );
 
                     return (
-                      <li key={documentName}>
+                      <li key={document.id || documentName} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                        <div className="min-w-0 flex-1">
                         {isPdf ? (
-                          <button type="button" className="document-row" onClick={() => setSelectedDocument(document)}>{content}</button>
+                          <button type="button" className="document-row" onClick={() => setSelectedDocumentId(document.id || document.url)}>{content}</button>
                         ) : (
                           <a className="document-row" href={document.url} target="_blank" rel="noreferrer">{content}</a>
                         )}
+                        </div>
+                        {canViewInternalReview && <DocumentDownloadButton document={document} />}
                       </li>
                     );
                   })
@@ -371,11 +380,11 @@ function RequestDetails({
             <p className="mt-3 whitespace-pre-wrap">{request.sharedResponse.text}</p>
             <p className="mt-2 text-xs">Shared by {request.sharedResponse.publishedBy} on {new Date(request.sharedResponse.publishedAt).toLocaleString()}</p>
           </section>}
-          <ReviewStatusCard
+          {!canViewInternalReview && <ReviewStatusCard
             request={{ ...request, managerDecision, departmentDecision }}
             document={firstDocument}
             showChecklistProgress={canViewInternalReview}
-          />
+          />}
           {canManageManagerActions && (
             <ManagerActions
               request={request}
@@ -427,7 +436,8 @@ function RequestDetails({
       {selectedDocument && (
         <PdfReviewModal
           document={selectedDocument}
-          onClose={() => setSelectedDocument(null)}
+          currentUser={currentUser}
+          onClose={() => setSelectedDocumentId(null)}
         />
       )}
       {showReviewerAssignment && (

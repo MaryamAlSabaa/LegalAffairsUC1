@@ -111,6 +111,26 @@ Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the 
 
 For production, point `PDF_STORAGE_PATH` to a dedicated encrypted volume or a service-account-protected network share. The account running the Node server needs read/write access; ordinary users do not. Do not place uploaded documents in `Code/public` or OneDrive-synced frontend assets.
 
+### Railway document storage and PDF 404 errors
+
+Attach a persistent volume to the **application/API service** that runs `npm start`; the PostgreSQL service's volume does not store uploaded documents. For a new repository, use a mount path such as `/data/pdfs` and set this application variable:
+
+```dotenv
+PDF_STORAGE_PATH=/data/pdfs
+```
+
+An explicit `PDF_STORAGE_PATH` takes precedence. When it is blank or absent, the app uses Railway's `RAILWAY_VOLUME_MOUNT_PATH` if available; otherwise it uses `server/storage/pdfs`. Setting a variable alone does not create or attach a volume. Railway makes its attached volume and mount-path variable available at runtime. See [Railway's volume documentation](https://docs.railway.com/volumes).
+
+Before changing the storage path or redeploying, back up any files still present in the current repository. Copy those files into the volume, preserving every request directory and stored filename. Database records contain relative paths and hashes, not the uploaded bytes, so changing a path does not migrate or recover documents.
+
+For a PDF preview failure, inspect the document request in the browser's Network panel while signed in:
+
+- `404` with `DOCUMENT_FILE_MISSING` means the document record is accessible but the stored file is absent. Older deployments report `The document is missing from server storage.` Restore the original file from backup at its recorded relative path. If no backup exists, obtain the original and use the requester's document update flow while the request is **Waiting for More Information**.
+- `404` with `DOCUMENT_NOT_FOUND` means the document was removed or the user cannot access it. Refresh the request and verify access; this response does not establish that a storage file was lost.
+- `401` means the user needs to sign in again.
+
+After configuring the volume, upload a test PDF, verify its preview, redeploy the application, and reopen the same document. A successful `/api/health` response checks directory access only; it does not verify that every recorded file exists or that storage is persistent.
+
 ## 6. Backups and recovery
 
 Back up these two resources as one recovery set:

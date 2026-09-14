@@ -1,3 +1,7 @@
+export function canViewInternalReview(role) {
+  return role === "Legal Reviewer" || role === "Legal Manager";
+}
+
 export function canManageReview(role) {
   return role === "Legal Reviewer" || role === "Owner";
 }

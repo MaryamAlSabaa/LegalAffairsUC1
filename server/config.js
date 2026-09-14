@@ -31,7 +31,9 @@ export const config = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   publicAppUrl: process.env.PUBLIC_APP_URL || "http://localhost:5173",
-  pdfStoragePath: path.resolve(serverDirectory, process.env.PDF_STORAGE_PATH || "storage/pdfs"),
+  // Railway supplies the mount path at runtime when a volume is attached.
+  // Keep explicit paths authoritative for existing document repositories.
+  pdfStoragePath: path.resolve(serverDirectory, process.env.PDF_STORAGE_PATH?.trim() || process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() || "storage/pdfs"),
   sessionHours: integerEnv("SESSION_HOURS", 12),
   secureCookies: booleanEnv("SECURE_COOKIES", process.env.NODE_ENV === "production"),
   useMockAiReview: booleanEnv("USE_MOCK_AI_REVIEW", true),

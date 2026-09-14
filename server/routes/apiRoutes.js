@@ -9,6 +9,7 @@ import { mapUser, requireAuth, requireRoles } from "../middleware/auth.js";
 import { highestRiskLevel, reviewLegalPdf } from "../services/aiReviewService.js";
 import { createNotifications, mapNotification, notifyRequestActivity } from "../services/notificationService.js";
 import { canAccessRequest, getDocumentForUser, listRequestOverview, listRequests } from "../services/requestService.js";
+import { createDocumentFileHandler, resolveDocumentStoragePath } from "../services/documentFileService.js";
 
 const router = Router();
 const supportedDocumentTypes = {
@@ -59,10 +60,7 @@ function parseJson(value, fallback = {}) {
 }
 
 function safeStoragePath(relativePath) {
-  const absolutePath = path.resolve(config.pdfStoragePath, relativePath);
-  const storageRoot = `${path.resolve(config.pdfStoragePath)}${path.sep}`;
-  if (!absolutePath.startsWith(storageRoot)) throw Object.assign(new Error("Invalid document storage path."), { status: 500 });
-  return absolutePath;
+  return resolveDocumentStoragePath(config.pdfStoragePath, relativePath);
 }
 
 async function saveDocument(requestId, file) {
@@ -232,6 +230,7 @@ router.get("/requests/overview", requireRoles("Legal Reviewer", "Legal Manager",
 
 router.post("/requests", upload.single("attachment"), async (req, res, next) => {
   let savedFile;
+  let committed = false;
   try {
     assertSupportedDocument(req.file);
     const data = parseJson(req.body.metadata);
@@ -294,10 +293,11 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
       }
     });
 
+    committed = true;
     const created = (await listRequests(req.user)).find((request) => request.id === requestId);
     res.status(201).json(created);
   } catch (error) {
-    if (savedFile) await removeStoredFiles([savedFile.relativePath]);
+    if (savedFile && !committed) await removeStoredFiles([savedFile.relativePath]);
     next(error);
   }
 });
@@ -305,6 +305,7 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
 router.patch("/requests/:requestId/documents", upload.array("files", 5), async (req, res, next) => {
   const savedFiles = [];
   let queuedPdfCount = 0;
+  let committed = false;
   try {
     if (req.user.role !== "Requester") return res.status(403).json({ error: "Only the requester can replace requested documents." });
     const ownership = await query("select * from legal_requests where id = $1 and requester_id = $2", [req.params.requestId, req.user.id]);
@@ -393,29 +394,16 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
       });
       return ids;
     });
+    committed = true;
     await removeStoredFiles(removedPaths);
     res.json(newIds);
   } catch (error) {
-    await removeStoredFiles(savedFiles.map((file) => file.relativePath));
+    if (!committed) await removeStoredFiles(savedFiles.map((file) => file.relativePath));
     next(error);
   }
 });
 
-router.get("/documents/:documentId/file", async (req, res, next) => {
-  try {
-    const document = await getDocumentForUser(req.user, req.params.documentId);
-    if (!document) return res.status(404).json({ error: "Document not found or access denied." });
-    const absolutePath = safeStoragePath(document.storage_path);
-    await fs.promises.access(absolutePath, fs.constants.R_OK);
-    const safeName = document.file_name.replace(/[\r\n"]/g, "_");
-    const disposition = document.mime_type === "application/pdf" ? "inline" : "attachment";
-    res.set({ "Content-Type": document.mime_type || "application/octet-stream", "Content-Disposition": `${disposition}; filename="${safeName}"`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
-    res.sendFile(absolutePath);
-  } catch (error) {
-    if (error.code === "ENOENT") return res.status(404).json({ error: "The document is missing from server storage." });
-    next(error);
-  }
-});
+router.get("/documents/:documentId/file", createDocumentFileHandler({ getDocumentForUser, storageRoot: config.pdfStoragePath }));
 
 router.post("/requests/:requestId/comments", async (req, res, next) => {
   try {
@@ -424,6 +412,7 @@ router.post("/requests/:requestId/comments", async (req, res, next) => {
     if (!text) return res.status(400).json({ error: "Comment text is required." });
     await transaction(async (client) => {
       await client.query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, text]);
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name) values($1,$2,$3,$4)", [req.params.requestId, "Comment added", req.user.id, req.user.name]);
       await notifyRequestActivity(client, {
         requestId: req.params.requestId,
         actor: req.user,
@@ -518,10 +507,13 @@ router.post("/requests/:requestId/route", requireRoles("Legal Reviewer", "Owner"
     const destinations = { requester: "Waiting for More Information", legal_manager: "Sent for Internal Approval", department_approver: "Under Review" };
     const status = destinations[req.body.destination];
     if (!status) return res.status(400).json({ error: "Unknown routing destination." });
+    const workflowRecipient = { requester: "Requester", legal_manager: "Legal Manager", department_approver: "Department Approver" }[req.body.destination];
+    const workflowAction = `Sent request to ${workflowRecipient}: ${String(req.body.commentText || "")}`;
     await transaction(async (client) => {
       const result = await client.query("update legal_requests set status=$1,legal_department_status='O',end_user_status='O' where id=$2 returning id", [status, req.params.requestId]);
       if (!result.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
       await client.query("insert into reviewer_comments(request_id,reviewer_id,comment_text) values($1,$2,$3)", [req.params.requestId, req.user.id, String(req.body.commentText || "")]);
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name) values($1,$2,$3,$4)", [req.params.requestId, workflowAction, req.user.id, req.user.name]);
       const destinationLabel = {
         requester: "the requester",
         legal_manager: "Legal Manager review",
@@ -535,7 +527,7 @@ router.post("/requests/:requestId/route", requireRoles("Legal Reviewer", "Owner"
         includeDepartmentApprover: req.body.destination === "department_approver",
       });
     });
-    res.json({ status });
+    res.json({ status, workflowAction });
   } catch (error) { next(error); }
 });
 
@@ -556,6 +548,7 @@ router.post("/requests/:requestId/manager-action", requireRoles("Legal Manager",
         [decision, status, req.params.requestId],
       );
       if (!updated.rows[0]) throw Object.assign(new Error("Request not found."), { status: 404 });
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name) values($1,$2,$3,$4)", [req.params.requestId, decision, req.user.id, req.user.name]);
       const managerActivity = {
         "Response Approved by Legal Manager": "approved the legal response and completed",
         "Closed by Legal Manager": "closed",
@@ -570,7 +563,7 @@ router.post("/requests/:requestId/manager-action", requireRoles("Legal Manager",
         detectUnassignedReviewer: false,
       });
     });
-    res.json({ managerDecision: decision, status });
+    res.json({ managerDecision: decision, status, workflowAction: decision });
   } catch (error) { next(error); }
 });
 
@@ -579,6 +572,7 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
     const decision = String(req.body.decision || "");
     if (!departmentDecisions.has(decision)) return res.status(400).json({ error: "Unknown department decision." });
     const status = statusForDepartmentDecision(decision);
+    const workflowAction = req.body.commentText ? `${decision}: ${String(req.body.commentText)}` : decision;
     await transaction(async (client) => {
       const updated = await client.query(
         `update legal_requests
@@ -590,6 +584,7 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
       );
       if (!updated.rows[0]) throw Object.assign(new Error("Request not found or not assigned to your department."), { status: 403 });
       await client.query("insert into department_approvals(request_id,approver_id,decision,comment_text) values($1,$2,$3,$4)", [req.params.requestId, req.user.id, decision, String(req.body.commentText || "")]);
+      await client.query("insert into audit_logs(request_id,action,actor_id,actor_name) values($1,$2,$3,$4)", [req.params.requestId, workflowAction, req.user.id, req.user.name]);
       await notifyRequestActivity(client, {
         requestId: req.params.requestId,
         actor: req.user,
@@ -599,7 +594,7 @@ router.post("/requests/:requestId/department-approval", requireRoles("Department
         detectUnassignedReviewer: false,
       });
     });
-    res.json({ departmentDecision: decision, status });
+    res.json({ departmentDecision: decision, status, workflowAction });
   } catch (error) { next(error); }
 });
 

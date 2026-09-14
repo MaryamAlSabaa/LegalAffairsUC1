@@ -1,0 +1,48 @@
+.request-progress {
+  --progress-purple: #6554d9;
+  --progress-purple-soft: #eeeaff;
+  --progress-green: #159b78;
+  margin-bottom: 24px;
+  padding: 22px 24px 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.request-progress-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.request-progress-header h3 { margin: 0; color: var(--text); font-size: 15px; font-weight: 750; }
+.request-progress-status { border-radius: 999px; padding: 5px 10px; background: var(--progress-purple-soft); color: #5742bc; font-size: 11px; font-weight: 700; }
+.request-progress-status.is-complete { color: #087354; background: #e8f7f0; }
+.request-progress-status.needs-attention { color: #96560c; background: #fff3da; }
+.request-progress-scroll { overflow-x: auto; padding: 10px 0 6px; margin: 12px -8px 0; border-radius: 8px; }
+.request-progress-scroll:focus-visible { outline: 2px solid var(--progress-purple); outline-offset: 2px; }
+.request-progress-steps { display: flex; min-width: max-content; list-style: none; padding: 3px 0 0; margin: 0; }
+.request-progress-step { position: relative; flex: 1 0 120px; min-width: 120px; padding: 0 8px 8px; text-align: center; }
+.request-progress-step::after { position: absolute; content: ""; height: 1px; top: 17px; left: calc(50% + 23px); width: calc(100% - 46px); background: var(--border); }
+.request-progress-step:last-child::after { display: none; }
+.request-progress-step.is-completed::after { background: var(--progress-green); }
+.request-progress-marker { position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin: 0 auto 12px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface-subtle); color: var(--text-soft); font-size: 12px; }
+.request-progress-marker svg { width: 20px; height: 20px; }
+.request-progress-step.is-completed .request-progress-marker, .request-progress-step.is-final .request-progress-marker { background: var(--progress-green); border-color: var(--progress-green); color: white; }
+.request-progress-step.is-current:not(.is-final) .request-progress-marker { background: var(--progress-purple); border-color: var(--surface); border-width: 5px; outline: 1px solid var(--progress-purple); color: white; font-weight: 700; }
+.request-progress-label { display: block; color: var(--text-soft); font-size: 11px; line-height: 1.45; font-weight: 600; }
+.request-progress-step.is-current .request-progress-label { color: var(--progress-purple); font-weight: 750; }
+.request-progress-step.is-final .request-progress-label { color: var(--progress-green); }
+.request-progress-detail { display: block; margin-top: 3px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.request-progress-step.is-unconfirmed .request-progress-marker { border-style: dashed; }
+.request-progress-description { margin: 10px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.7; }
+.request-progress-latest { margin: 9px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.request-progress-latest strong { color: var(--text-soft); font-weight: 650; }
+
+.dark .request-progress { --progress-purple: #b4a6ff; --progress-purple-soft: #2a2448; --progress-green: #33b893; }
+.dark .request-progress-status { color: #d4caff; }
+.dark .request-progress-status.is-complete { color: #94e3c7; background: #173c32; }
+.dark .request-progress-status.needs-attention { color: #f4cf91; background: #493421; }
+.dark .request-progress-step.is-current:not(.is-final) .request-progress-marker { background: #7760dc; }
+.dark .request-progress-step.is-completed .request-progress-marker, .dark .request-progress-step.is-final .request-progress-marker { background: #168b6a; border-color: #168b6a; }
+
+@media (max-width: 640px) {
+  .request-progress { padding: 18px 16px 14px; border-radius: 14px; }
+  .request-progress-step { flex-basis: 112px; min-width: 112px; }
+}

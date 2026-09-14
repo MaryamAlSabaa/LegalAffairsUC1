@@ -5,6 +5,7 @@
   "scripts": {
     "build": "npm --prefix Code ci && npm --prefix Code run build && npm --prefix server ci",
     "start": "npm --prefix server start",
+    "test": "node --test server/tests/*.test.js Code/tests/*.test.js",
     "db:init": "npm --prefix server run db:init",
     "db:seed": "npm --prefix server run db:seed",
     "db:seed-demo": "npm --prefix server run db:seed-demo"

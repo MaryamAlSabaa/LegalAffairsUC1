@@ -155,6 +155,7 @@ function matchesDashboardFilter(request, filter) {
 }
 
 function App() {
+  const requestMutationVersion = useRef(0);
   // isLoggedIn controls whether the user sees auth screens or the main platform.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
@@ -425,13 +426,18 @@ function App() {
   );
 
   useEffect(() => {
-    const shouldPollAiState =
+    const shouldPollRequests =
       isLoggedIn &&
-      (hasActiveAiReview || currentPage === "legal-engine");
+      (hasActiveAiReview || currentPage === "legal-engine" || currentPage === "details");
 
-    if (!shouldPollAiState) return undefined;
+    if (!shouldPollRequests) return undefined;
+    let isCancelled = false;
+    let isRefreshing = false;
 
     const intervalId = window.setInterval(async () => {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      const mutationVersion = requestMutationVersion.current;
       try {
         const [
           refreshedRequests,
@@ -446,20 +452,30 @@ function App() {
             ? fetchLegalAffairEngineEvents().catch(() => [])
             : Promise.resolve(engineEvents),
         ]);
-        setRequests(refreshedRequests);
-        setEngineState(refreshedEngineState);
-        setEngineEvents(refreshedEngineEvents);
+        if (isCancelled) return;
+        // A poll started before a saved action must not undo that action in the UI.
+        if (mutationVersion === requestMutationVersion.current) setRequests(refreshedRequests);
+        if (currentPage === "legal-engine") {
+          setEngineState(refreshedEngineState);
+          setEngineEvents(refreshedEngineEvents);
+        }
       } catch (error) {
+        if (isCancelled) return;
         setBackendMessage(
-          `Could not refresh AI review queue status: ${
+          `Could not refresh request status: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
+      } finally {
+        isRefreshing = false;
       }
     }, 5000);
 
-    return () => window.clearInterval(intervalId);
-  }, [isLoggedIn, hasActiveAiReview, currentPage]);
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isLoggedIn, currentUser?.id, hasActiveAiReview, currentPage]);
 
   async function applyAuthenticatedUser(user) {
     setCurrentUser(user);
@@ -554,6 +570,7 @@ function App() {
     action,
     user = currentUser.name,
     requestId = "System",
+    recordedByServer = false,
   ) {
     const newLog = {
       id: Date.now(),
@@ -566,7 +583,7 @@ function App() {
     setAuditLogs((currentLogs) => [newLog, ...currentLogs]);
 
     try {
-      await createBackendAuditLog(action, currentUser, requestId);
+      if (!recordedByServer) await createBackendAuditLog(action, currentUser, requestId);
     } catch (error) {
       setBackendMessage(
         `The activity is visible in this session, but the central audit log could not be updated: ${
@@ -804,6 +821,7 @@ function App() {
   async function handleAddRequestComment(requestId, commentText) {
     if (!await confirmUnassignedReviewerAction(requestId, "add this comment")) return false;
     await createBackendRequestComment({ requestId, currentUser, commentText });
+    requestMutationVersion.current += 1;
     const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
@@ -837,6 +855,7 @@ function App() {
       currentUser,
       decision,
     });
+    requestMutationVersion.current += 1;
     const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
@@ -845,6 +864,7 @@ function App() {
           ? {
               ...request,
               managerDecision: savedDecision.managerDecision,
+              workflowAction: savedDecision.workflowAction || decision,
               status: savedDecision.status,
               updatedAt: actionAt,
               lastAction: decision,
@@ -858,13 +878,14 @@ function App() {
       ),
     );
 
-    await addAuditLog(decision, currentUser.name, requestId);
+    await addAuditLog(decision, currentUser.name, requestId, true);
     return savedDecision;
   }
 
 
   async function handleManagerAssignReviewers(requestId, reviewerIds) {
     const assignment = await assignReviewersAsManager({ requestId, reviewerIds });
+    requestMutationVersion.current += 1;
     const actionAt = currentTrackerTimestamp();
     const assignmentAction = `Assigned reviewers: ${assignment.assignedReviewers.map((reviewer) => reviewer.name).join(", ")}`;
 
@@ -907,6 +928,7 @@ function App() {
       destination,
       commentText,
     });
+    requestMutationVersion.current += 1;
     const destinationLabel = {
       requester: "Requester",
       legal_manager: "Legal Manager",
@@ -921,6 +943,7 @@ function App() {
           ? {
               ...request,
               status: routedRequest.status,
+              workflowAction: routedRequest.workflowAction || routeAction,
               reviewerComments: [
                 ...(request.reviewerComments || []),
                 {
@@ -945,6 +968,7 @@ function App() {
       routeAction,
       currentUser.name,
       requestId,
+      true,
     );
     return true;
   }
@@ -956,6 +980,7 @@ function App() {
       decision,
       commentText,
     });
+    requestMutationVersion.current += 1;
     const actionAt = currentTrackerTimestamp();
 
     setRequests((currentRequests) =>
@@ -964,6 +989,7 @@ function App() {
           ? {
               ...request,
               departmentDecision: savedDecision.departmentDecision,
+              workflowAction: savedDecision.workflowAction || decision,
               status: savedDecision.status,
               updatedAt: actionAt,
               lastAction: `${decision}${commentText ? `: ${commentText}` : ""}`,
@@ -977,7 +1003,7 @@ function App() {
       ),
     );
 
-    await addAuditLog(decision, currentUser.name, requestId);
+    await addAuditLog(savedDecision.workflowAction || decision, currentUser.name, requestId, true);
     return savedDecision;
   }
 
@@ -990,6 +1016,7 @@ function App() {
   }) {
     if (!await confirmUnassignedReviewerAction(requestId, `${checked ? "select" : "clear"} the checklist item “${criteria}”`)) return false;
     await updateBackendChecklistItem({ checklistItemId, checked });
+    requestMutationVersion.current += 1;
 
     setRequests((currentRequests) =>
       currentRequests.map((request) => {

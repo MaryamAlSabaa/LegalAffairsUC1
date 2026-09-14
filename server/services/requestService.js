@@ -86,7 +86,7 @@ export async function listRequests(user) {
   if (requestsResult.rowCount === 0) return [];
   const requestIds = requestsResult.rows.map((row) => row.id);
 
-  const [documentsResult, checklistResult, suggestionsResult, commentsResult, jobsResult, reviewerAssignments, latestActionsResult] = await Promise.all([
+  const [documentsResult, checklistResult, suggestionsResult, commentsResult, jobsResult, reviewerAssignments, latestActionsResult, workflowActionsResult] = await Promise.all([
     query("select * from request_documents where request_id = any($1::text[]) order by is_current desc, created_at desc", [requestIds]),
     query(`select ci.*, c.criteria, c.sort_order from request_checklist_items ci join legal_review_criteria c on c.id = ci.criteria_id where ci.request_id = any($1::text[]) order by c.sort_order`, [requestIds]),
     query(`select s.* from document_ai_suggestions s join request_documents d on d.id = s.document_id where d.request_id = any($1::text[]) order by s.created_at`, [requestIds]),
@@ -96,6 +96,17 @@ export async function listRequests(user) {
     query(`select distinct on (request_id) request_id,action,actor_name,created_at
            from audit_logs where request_id=any($1::text[])
            order by request_id,created_at desc`, [requestIds]),
+    // Comments and checklist edits must not replace the last routing decision.
+    query(`select distinct on (request_id) request_id,action
+           from audit_logs where request_id=any($1::text[])
+             and (action=any($2::text[]) or action like any($3::text[]))
+           order by request_id,created_at desc,id desc`, [requestIds, [
+      "Escalated by Legal Manager", "Response Approved by Legal Manager", "Closed by Legal Manager",
+      "Reviewer Assignment Started", "Department Approved", "Department Requested Revision",
+    ], [
+      "Sent request to Requester:%", "Sent request to Legal Manager:%", "Sent request to Department Approver:%",
+      "Department Approved:%", "Department Requested Revision:%",
+    ]]),
   ]);
 
   const documentsByRequest = groupBy(documentsResult.rows, "request_id");
@@ -104,6 +115,7 @@ export async function listRequests(user) {
   const commentsByRequest = groupBy(commentsResult.rows, "request_id");
   const jobsByRequest = groupBy(jobsResult.rows, "request_id");
   const latestActionByRequest = Object.fromEntries(latestActionsResult.rows.map((action) => [action.request_id, action]));
+  const workflowActionByRequest = Object.fromEntries(workflowActionsResult.rows.map((action) => [action.request_id, action.action]));
 
   const priorityRank = { Urgent: 1, High: 2, Medium: 3, Low: 4 };
   const activeJobs = jobsResult.rows
@@ -140,6 +152,7 @@ export async function listRequests(user) {
     updatedAt: formatDateTime(row.updated_at),
     updatedAtIso: new Date(row.updated_at).toISOString(),
     lastAction: latestActionByRequest[row.id]?.action || row.manager_decision || row.status,
+    workflowAction: workflowActionByRequest[row.id] || "",
     lastActionBy: latestActionByRequest[row.id]?.actor_name || "System",
     lastActionAt: formatDateTime(latestActionByRequest[row.id]?.created_at || row.updated_at),
     legalDepartmentStatus: row.legal_department_status || (["Approved", "Closed", "Archived"].includes(row.status) ? "C" : "O"),
