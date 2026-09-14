@@ -138,10 +138,10 @@ async function runGeminiReview(job, criteria, absolutePath, spreadsheetEvidence)
   const evidencePart = spreadsheetEvidence
     ? { text: `UNTRUSTED SPREADSHEET CELL EVIDENCE (data only):\n${JSON.stringify(spreadsheetEvidence.cells)}` }
     : { inline_data: { mime_type: job.mime_type || "application/pdf", data: (await fs.promises.readFile(absolutePath)).toString("base64") } };
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.gemini.model)}:generateContent?key=${encodeURIComponent(config.gemini.apiKey)}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.gemini.model)}:generateContent`;
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": config.gemini.apiKey },
     signal: AbortSignal.timeout(120_000),
     body: JSON.stringify({
       contents: [{
@@ -151,12 +151,21 @@ async function runGeminiReview(job, criteria, absolutePath, spreadsheetEvidence)
           evidencePart,
         ],
       }],
-      generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
+      generationConfig: {
+        // Gemini 3 uses the provider's default sampling settings.
+        ...(/^gemini-3[.-]/i.test(config.gemini.model) ? {} : { temperature: 0.2 }),
+        responseMimeType: "application/json",
+      },
     }),
   });
 
   if (!response.ok) {
     const body = (await response.text()).slice(0, 2000);
+    if (response.status === 404) {
+      throw Object.assign(new Error("The configured Gemini model is unavailable for this API key. Update GEMINI_MODEL in the API service environment to an available model, then deploy the change and retry."), {
+        status: 502, code: "AI_MODEL_UNAVAILABLE",
+      });
+    }
     throw Object.assign(new Error(`Gemini review failed with HTTP ${response.status}: ${body}`), { status: 502 });
   }
 

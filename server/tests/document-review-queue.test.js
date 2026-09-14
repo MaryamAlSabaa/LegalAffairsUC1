@@ -118,6 +118,7 @@ async function databaseQuery(target, text, values = []) {
     const job = target.jobs.find((item) => item.id === values[failed ? 2 : 1]);
     if (job) {
       job.status = failed ? "failed" : sql.includes("set status='completed'") ? "completed" : "processing";
+      if (failed) job.last_error = values[0];
       job.operational_trace = [...(job.operational_trace || []), ...JSON.parse(values[failed ? 1 : 0] || "[]")];
     }
     return result();
@@ -371,6 +372,29 @@ test("approved-template choice survives failed processing and an explicitly requ
   assert.equal(prompts.length, 2);
   assert.ok(prompts.every((prompt) => prompt.includes(approvedReference.text)));
   assert.equal(state.jobs[0].operational_trace.filter((event) => event.step === "queued").length, 2);
+});
+
+test("an unavailable Gemini model returns actionable guidance and records failure without saving findings", async () => {
+  const privateProviderText = "private-provider-response-that-must-not-be-exposed";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: { code: 404, status: "NOT_FOUND", message: `${privateProviderText} ${config.gemini.apiKey}` },
+  }), { status: 404 });
+  const options = { documentId: documentIds.pdf };
+  assert.equal((await post(`/requests/${requestA}/queue-review`, options)).status, 200);
+  const response = await post("/ai/process-next", { requestId: requestA, ...options });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.code, "AI_MODEL_UNAVAILABLE");
+  assert.match(body.error, /GEMINI_MODEL.*deploy/);
+  assert.equal(state.jobs[0].status, "failed");
+  assert.equal(state.jobs[0].last_error, body.error);
+  assert.equal(state.jobs[0].operational_trace.at(-1).message, body.error);
+  assert.equal(state.documents.get(documentIds.pdf).ai_review_result, undefined);
+  assert.deepEqual(state.checklist, []);
+  for (const value of [JSON.stringify(body), JSON.stringify(state.jobs)]) {
+    assert.ok(!value.includes(privateProviderText));
+    assert.ok(!value.includes(config.gemini.apiKey));
+  }
 });
 
 test("a later default run replaces the earlier template option without changing saved sources", async () => {

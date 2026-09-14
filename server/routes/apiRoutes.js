@@ -859,6 +859,10 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
         });
       }).catch(() => {});
     }
+    // This provider error contains only our fixed guidance and can be shown in production.
+    if (error.code === "AI_MODEL_UNAVAILABLE") {
+      return res.status(502).json({ error: error.message, code: error.code });
+    }
     next(error);
   }
 });

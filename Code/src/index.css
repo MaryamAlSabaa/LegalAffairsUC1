@@ -452,11 +452,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .professional-table tbody tr.is-closed { opacity: .64; }
 .professional-table td > small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 8.4px; }
 .matter-cell { display: flex; min-width: 205px; align-items: center; gap: 9px; }
+.matter-cell > div { min-width: 0; flex: 1; }
 .matter-file { display: grid; width: 31px; height: 34px; flex: 0 0 31px; place-items: center; border: 1px solid #d8e4f3; border-radius: 7px; color: var(--ku-blue); background: #f4f8fd; }
-.matter-cell strong { display: block; overflow: hidden; color: var(--text); font-size: 10.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.matter-cell p { margin: 3px 0 0; color: var(--text-muted); font-size: 8.5px; }
+.matter-cell strong { display: block; color: var(--text); font-size: 10.5px; font-weight: 650; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+.matter-cell p { margin: 3px 0 0; color: var(--text-muted); font-size: 8.5px; overflow-wrap: anywhere; }
 .requester-name { color: var(--text); font-size: 9.8px; font-weight: 600; }
-.legal-tracker-table { min-width: 1900px; }
+.request-register-table.legal-tracker-table { min-width: 1900px; }
 .legal-tracker-table th { white-space: normal; line-height: 1.35; }
 .legal-tracker-table td { min-width: 105px; vertical-align: top; }
 .legal-tracker-table td:first-child { min-width: 230px; }

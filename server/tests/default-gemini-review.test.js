@@ -8,6 +8,7 @@ import { getJobReviewOptions, reviewQueuedEvent } from "../services/reviewSetupS
 process.env.DATABASE_URL = "postgresql://unused:unused@127.0.0.1:1/default_review_tests";
 process.env.GEMINI_API_KEY = "test-key-never-sent";
 process.env.USE_MOCK_AI_REVIEW = "false";
+process.env.GEMINI_MODEL = "gemini-3.6-flash";
 process.env.DOTENV_CONFIG_PATH = path.join(os.tmpdir(), "default-gemini-test-nonexistent.env");
 const { buildPrompt, reviewLegalDocument } = await import("../services/aiReviewService.js");
 
@@ -30,10 +31,13 @@ async function reviewWithStub(context, providerResult, reviewContext = {}, inspe
   const bytes = Buffer.from("%PDF-1.7\nInert test evidence\n%%EOF");
   await fs.writeFile(file, bytes);
   context.after(async () => { await fs.unlink(file); await fs.rmdir(directory); });
-  context.mock.method(globalThis, "fetch", async (_url, options) => {
+  context.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent");
+    assert.equal(options.headers["x-goog-api-key"], "test-key-never-sent");
     const payload = JSON.parse(options.body);
     const parts = payload.contents[0].parts;
     assert.equal(payload.generationConfig.responseMimeType, "application/json");
+    assert.equal(Object.hasOwn(payload.generationConfig, "temperature"), false);
     assert.deepEqual(Buffer.from(parts[1].inline_data.data, "base64"), bytes);
     inspect(parts[0].text, payload);
     return {

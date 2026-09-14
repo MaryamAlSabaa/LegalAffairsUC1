@@ -113,6 +113,15 @@ test("missing AI settings preserve mock mode and an empty provider key", async (
   const config = loadConfiguration(fixture);
   assert.equal(config.useMockAiReview, true);
   assert.equal(config.apiKey, "");
+  assert.equal(config.model, "gemini-3.6-flash");
+});
+
+test("injected model settings trim whitespace and blank values use the supported default", async (context) => {
+  const fixture = await createFixture(context, `DATABASE_URL=${fixtureDatabaseUrl}\nGEMINI_MODEL=file-fixture-model\n`);
+  assert.equal(loadConfiguration(fixture, { overrides: { GEMINI_MODEL: "  custom-model  " } }).model, "custom-model");
+  for (const model of ["", "   "]) {
+    assert.equal(loadConfiguration(fixture, { overrides: { GEMINI_MODEL: model } }).model, "gemini-3.6-flash");
+  }
 });
 
 test("an explicit missing env file does not fall back to the default .env", async (context) => {
