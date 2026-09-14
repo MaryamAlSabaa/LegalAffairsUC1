@@ -6,12 +6,16 @@ import multer from "multer";
 import { config } from "../config.js";
 import { query, transaction } from "../db.js";
 import { mapUser, requireAuth, requireRoles } from "../middleware/auth.js";
-import { highestRiskLevel, reviewLegalPdf } from "../services/aiReviewService.js";
+import { highestRiskLevel, reviewLegalDocument } from "../services/aiReviewService.js";
 import { createNotifications, mapNotification, notifyRequestActivity } from "../services/notificationService.js";
 import { canAccessRequest, getDocumentForUser, listRequestOverview, listRequests } from "../services/requestService.js";
 import { createDocumentFileHandler, resolveDocumentStoragePath } from "../services/documentFileService.js";
+import { getJobReviewOptions, reviewQueuedEvent } from "../services/reviewSetupService.js";
+import { findRelatedCases } from "../services/relatedCaseService.js";
 
 const router = Router();
+const reviewableMimeTypes = ["application/pdf", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
+const documentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const supportedDocumentTypes = {
   ".pdf": { mimeType: "application/pdf", family: "pdf" },
   ".doc": { mimeType: "application/msword", family: "ole" },
@@ -50,7 +54,7 @@ function assertSupportedDocument(file) {
   if (!signatureMatches) {
     throw Object.assign(new Error(`The uploaded ${extension} file does not match its declared document format.`), { status: 400 });
   }
-  return { ...format, extension, isPdf: format.family === "pdf" };
+  return { ...format, extension, isReviewable: [".pdf", ".xls", ".xlsx"].includes(extension) };
 }
 
 function parseJson(value, fallback = {}) {
@@ -75,7 +79,7 @@ async function saveDocument(requestId, file) {
     absolutePath,
     sha256: crypto.createHash("sha256").update(file.buffer).digest("hex"),
     mimeType: format.mimeType,
-    isPdf: format.isPdf,
+    isReviewable: format.isReviewable,
   };
 }
 
@@ -250,10 +254,10 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
       const approver = await client.query(`select u.id from users u join roles r on r.id = u.role_id join departments d on d.id = u.department_id where r.id = 'department_approver' and d.name = $1 and u.status = 'Active' order by u.last_seen_at desc nulls last limit 1`, [data.department]);
       if (!department.rows[0] || !category.rows[0]) throw Object.assign(new Error("Department or legal category was not found."), { status: 400 });
 
-      const initialStatus = savedFile.isPdf ? "AI Review Pending" : "New";
-      const initialSummary = savedFile.isPdf
+      const initialStatus = savedFile.isReviewable ? "AI Review Pending" : "New";
+      const initialSummary = savedFile.isReviewable
         ? data.aiSummary || "AI legal review is pending."
-        : "Office document secured for manual Legal Affairs review. Automated page-level analysis is available for PDF documents only.";
+        : "Word document secured for manual Legal Affairs review. AI analysis supports PDF and Excel attachments.";
 
       await client.query(
         `insert into legal_requests (id, title, description, party_name, end_user_name, requester_id, department_id, category_code, assigned_manager_id, assigned_department_approver_id, priority, risk_level, status, deadline, ai_summary)
@@ -272,15 +276,15 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
         const criteriaId = criteriaMap.get(item.criteria);
         if (criteriaId) await client.query(`insert into request_checklist_items (request_id, document_id, criteria_id, page, checked, note) values ($1,$2,$3,$4,$5,$6) on conflict do nothing`, [requestId, document.rows[0].id, criteriaId, String(item.page || "N/A"), Boolean(item.checked), item.note || ""]);
       }
-      if (savedFile.isPdf) {
+      if (savedFile.isReviewable) {
         await client.query(
           `insert into ai_review_jobs (request_id, document_id, queue_order, operational_trace) values ($1,$2,$3,$4::jsonb)`,
-          [requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Request saved and PDF secured in the central repository." }])],
+          [requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Request saved and document secured in the central repository." }])],
         );
       }
       await client.query(
         "insert into audit_logs (request_id, action, actor_id, actor_name, ip_address) values ($1,$2,$3,$4,$5)",
-        [requestId, savedFile.isPdf ? "Request submitted; PDF review queued" : "Request submitted; Office document secured for manual review", req.user.id, req.user.name, req.ip],
+        [requestId, savedFile.isReviewable ? "Request submitted; document review queued" : "Request submitted; Office document secured for manual review", req.user.id, req.user.name, req.ip],
       );
       if (manager.rows[0]?.id) {
         await createNotifications(client, [{
@@ -304,7 +308,7 @@ router.post("/requests", upload.single("attachment"), async (req, res, next) => 
 
 router.patch("/requests/:requestId/documents", upload.array("files", 5), async (req, res, next) => {
   const savedFiles = [];
-  let queuedPdfCount = 0;
+  let queuedDocumentCount = 0;
   let committed = false;
   try {
     if (req.user.role !== "Requester") return res.status(403).json({ error: "Only the requester can replace requested documents." });
@@ -338,11 +342,11 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
           [req.params.requestId, saved.file.originalname.slice(0,255), saved.mimeType, saved.relativePath, saved.file.size, saved.sha256],
         );
         ids.push(document.rows[0].id);
-        if (saved.isPdf) {
-          queuedPdfCount += 1;
+        if (saved.isReviewable) {
+          queuedDocumentCount += 1;
           await client.query(
             `insert into ai_review_jobs (request_id,document_id,queue_order,operational_trace) values ($1,$2,$3,$4::jsonb)`,
-            [req.params.requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Replacement PDF secured and queued." }])],
+            [req.params.requestId, document.rows[0].id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Replacement document secured and queued." }])],
           );
         }
       }
@@ -350,8 +354,8 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
       if (savedFiles.length === 0) {
         const remaining = await client.query("select id,mime_type from request_documents where request_id=$1 and is_current=true", [req.params.requestId]);
         if (remaining.rowCount === 0) throw Object.assign(new Error("At least one current document must remain attached."), { status: 400 });
-        for (const document of remaining.rows.filter((item) => item.mime_type === "application/pdf")) {
-          queuedPdfCount += 1;
+        for (const document of remaining.rows.filter((item) => reviewableMimeTypes.includes(item.mime_type))) {
+          queuedDocumentCount += 1;
           await client.query(
             `insert into ai_review_jobs(request_id,document_id,queue_order,operational_trace)
              values($1,$2,$3,$4::jsonb)
@@ -359,19 +363,19 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
              set status='queued',queue_order=excluded.queue_order,attempt_count=0,last_error=null,
                  started_at=null,completed_at=null,current_step='Requeued after document update',
                  operational_trace=ai_review_jobs.operational_trace || excluded.operational_trace`,
-            [req.params.requestId, document.id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Remaining PDF requeued after the document set changed." }])],
+            [req.params.requestId, document.id, Date.now(), JSON.stringify([{ at: new Date().toISOString(), step: "queued", message: "Remaining document requeued after the document set changed." }])],
           );
         }
       }
 
       const previousId = previous.rows[0]?.id;
       const retainedPreviousId = previousId && !removeDocumentIds.includes(previousId) ? previousId : null;
-      const hasQueuedPdf = queuedPdfCount > 0;
+      const hasQueuedDocument = queuedDocumentCount > 0;
       await client.query(
         `update legal_requests
          set previous_document_id=case when $1 then $2 else previous_document_id end,
               previous_ai_summary=ai_summary,previous_ai_review_result=ai_review_result,
-              ai_summary=case when $3 then 'Updated PDF document set queued for AI review.' else 'Office document set secured for manual Legal Affairs review.' end,
+              ai_summary=case when $3 then 'Updated document set queued for AI review.' else 'Office document set secured for manual Legal Affairs review.' end,
               ai_review_result=null,
               legal_department_status='O',end_user_status='O',
                status=case
@@ -380,7 +384,7 @@ router.patch("/requests/:requestId/documents", upload.array("files", 5), async (
                  else 'New'
                end
          where id=$4`,
-        [savedFiles.length > 0, retainedPreviousId, hasQueuedPdf, req.params.requestId],
+        [savedFiles.length > 0, retainedPreviousId, hasQueuedDocument, req.params.requestId],
       );
       await client.query("insert into audit_logs(request_id,action,actor_id,actor_name,ip_address) values($1,'Requester updated supporting documents',$2,$3,$4)", [req.params.requestId, req.user.id, req.user.name, req.ip]);
       await notifyRequestActivity(client, {
@@ -656,7 +660,7 @@ router.patch("/ai-jobs/:jobId/order", requireRoles("Admin User", "Owner"), async
 
 router.post("/engine/rebuild", requireRoles("Admin User", "Owner"), async (_req, res, next) => {
   try {
-    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order) select d.request_id,d.id,(extract(epoch from now())*1000)::bigint+row_number() over() from request_documents d join legal_requests lr on lr.id=d.request_id left join ai_review_jobs j on j.document_id=d.id where d.is_current=true and d.mime_type='application/pdf' and lr.ai_review_result is null and j.id is null on conflict do nothing returning id`);
+    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order) select d.request_id,d.id,(extract(epoch from now())*1000)::bigint+row_number() over() from request_documents d join legal_requests lr on lr.id=d.request_id left join ai_review_jobs j on j.document_id=d.id where d.is_current=true and d.mime_type in ('application/pdf','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') and lr.ai_review_result is null and j.id is null on conflict do nothing returning id`);
     res.json({ count: result.rowCount });
   } catch (error) { next(error); }
 });
@@ -698,14 +702,26 @@ router.post("/requests/:requestId/publish-response", requireRoles("Legal Reviewe
 
 router.post("/requests/:requestId/queue-review", requireRoles("Legal Reviewer", "Legal Manager"), async (req,res,next) => {
   try {
+    const documentId = req.body?.documentId ?? null;
+    if (documentId !== null && (typeof documentId !== "string" || !documentIdPattern.test(documentId))) return res.status(400).json({error:"Invalid document identifier."});
+    const useApprovedTemplates = req.body?.useApprovedTemplates ?? false;
+    if (typeof useApprovedTemplates !== "boolean") return res.status(400).json({error:"Template comparison must be enabled or disabled."});
     if (!await canAccessRequest(req.user,req.params.requestId)) return res.sendStatus(404);
     if (config.useMockAiReview || !config.gemini.apiKey) return res.status(503).json({error:"Actual AI analysis is not configured. Configure GEMINI_API_KEY and set USE_MOCK_AI_REVIEW=false on the server."});
-    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order)
-      select request_id,id,(extract(epoch from now())*1000)::bigint from request_documents
-      where request_id=$1 and is_current=true and mime_type='application/pdf'
-      on conflict(request_id,document_id) do update set status='queued',last_error=null,completed_at=null
-      where ai_review_jobs.status <> 'processing' returning id`, [req.params.requestId]);
-    if (!result.rowCount) return res.status(409).json({error:"Upload a PDF first, or wait for the current review to finish."});
+    if (useApprovedTemplates) {
+      const source = await query("select review_references from legal_requests where id=$1", [req.params.requestId]);
+      if (!source.rows[0]?.review_references?.some(reference => reference.approved === true && reference.title?.trim() && reference.text?.trim())) {
+        return res.status(400).json({error:"Add an approved template for comparison, or run without templates."});
+      }
+    }
+    const result = await query(`insert into ai_review_jobs(request_id,document_id,queue_order,operational_trace)
+      select request_id,id,(extract(epoch from now())*1000)::bigint,$3::jsonb from request_documents
+      where request_id=$1 and is_current=true and mime_type in ('application/pdf','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        and ($2::uuid is null or id=$2)
+      on conflict(request_id,document_id) do update set status='queued',last_error=null,completed_at=null,
+        operational_trace=ai_review_jobs.operational_trace || excluded.operational_trace
+      where ai_review_jobs.status <> 'processing' returning id`, [req.params.requestId, documentId, JSON.stringify([reviewQueuedEvent(useApprovedTemplates)])]);
+    if (!result.rowCount) return res.status(409).json({error:"Choose a current PDF or Excel attachment, or wait for its review to finish."});
     res.json({queued:result.rowCount});
   } catch(error) {next(error);}
 });
@@ -713,6 +729,8 @@ router.post("/requests/:requestId/queue-review", requireRoles("Legal Reviewer", 
 router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester", "Legal Reviewer", "Legal Manager"), async (req, res, next) => {
   let claimedJob = null;
   try {
+    const documentId = req.body?.documentId ?? null;
+    if (documentId !== null && (typeof documentId !== "string" || !documentIdPattern.test(documentId) || !req.body?.requestId)) return res.status(400).json({error:"A valid document and request are required."});
     claimedJob = await transaction(async (client) => {
       const engine = await client.query(`select is_running from ai_engine_control where id='legal_affair_engine'`);
       if (!engine.rows[0]?.is_running) return null;
@@ -721,19 +739,20 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
          from ai_review_jobs j
          join legal_requests lr on lr.id=j.request_id
          join request_documents d on d.id=j.document_id
-         where j.status='queued' and d.is_current=true and d.mime_type='application/pdf' and ($1<>'Requester' or lr.requester_id=$2) and ($3::text is null or j.request_id=$3)
+         where j.status='queued' and d.is_current=true and d.mime_type in ('application/pdf','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') and ($1<>'Requester' or lr.requester_id=$2) and ($3::text is null or j.request_id=$3)
+           and ($4::uuid is null or j.document_id=$4)
          order by case lr.priority when 'Urgent' then 1 when 'High' then 2 when 'Medium' then 3 else 4 end,j.queue_order
          for update skip locked limit 1`,
-        [req.user.role, req.user.id, req.body.requestId || null],
+        [req.user.role, req.user.id, req.body.requestId || null, documentId],
       );
       if (!job.rows[0]) return null;
       await client.query(
         `update ai_review_jobs
          set status='processing',attempt_count=attempt_count+1,started_at=now(),locked_at=now(),completed_at=null,
-             current_step='Preparing isolated PDF review',
+             current_step='Preparing isolated document review',
              operational_trace=operational_trace || $1::jsonb
          where id=$2`,
-        [JSON.stringify([{ at: new Date().toISOString(), step: "processing", message: "The server claimed this PDF for an isolated draft review." }]), job.rows[0].id],
+        [JSON.stringify([{ at: new Date().toISOString(), step: "processing", message: "The server claimed this document for an isolated draft review." }]), job.rows[0].id],
       );
       return job.rows[0];
     });
@@ -744,10 +763,18 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
     const criteria = criteriaResult.rows.map((item) => item.criteria);
     const context = await query("select title,description,category_code,review_references from legal_requests where id=$1", [claimedJob.request_id]);
     const categories = await query("select code,name from legal_categories order by code");
+    const reviewOptions = getJobReviewOptions(claimedJob);
+    let pastCaseLookupStatus = "available";
+    const pastCases = await findRelatedCases({ requestId: claimedJob.request_id, categoryCode: context.rows[0].category_code,
+      title: context.rows[0].title, description: context.rows[0].description }).catch(() => {
+      pastCaseLookupStatus = "unavailable";
+      return [];
+    });
     claimedJob.reviewContext = { title: context.rows[0].title, description: context.rows[0].description,
       submittedCategory: context.rows[0].category_code, categories: categories.rows,
-      approvedTemplates: context.rows[0].review_references || [] };
-    const review = await reviewLegalPdf(claimedJob, criteria, safeStoragePath(claimedJob.storage_path));
+      approvedTemplates: reviewOptions.useApprovedTemplates ? context.rows[0].review_references || [] : [],
+      pastCases, pastCaseLookupStatus };
+    const review = await reviewLegalDocument(claimedJob, criteria, safeStoragePath(claimedJob.storage_path));
     const criteriaByName = new Map(criteriaResult.rows.map((item) => [item.criteria.toLowerCase(), item.id]));
 
     await transaction(async (client) => {
@@ -778,11 +805,11 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
       await client.query(
         `update legal_requests
          set status=case
+               when status not in ('New','AI Review Pending','AI Review Failed','AI Review Complete','Assigned to Legal Reviewer') then status
                when exists(select 1 from request_reviewer_assignments a where a.request_id=legal_requests.id) then 'Assigned to Legal Reviewer'
                else 'AI Review Complete'
              end,
-             risk_level=$1,ai_summary=$2,ai_review_result=$3::jsonb,
-             legal_department_status='O',end_user_status='O'
+             risk_level=$1,ai_summary=$2,ai_review_result=$3::jsonb
          where id=$4`,
         [highestRiskLevel(review), review.draft_review_note, JSON.stringify(review), claimedJob.request_id],
       );
@@ -818,7 +845,7 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
            where id=$3`,
           [message.slice(0, 4000), JSON.stringify([{ at: new Date().toISOString(), step: "failed", message: message.slice(0, 1000) }]), claimedJob.id],
         );
-        await client.query("update legal_requests set status='AI Review Failed',legal_department_status='O',end_user_status='O' where id=$1", [claimedJob.request_id]);
+        await client.query("update legal_requests set status='AI Review Failed' where id=$1 and status in ('New','AI Review Pending','AI Review Failed','AI Review Complete','Assigned to Legal Reviewer')", [claimedJob.request_id]);
         await client.query(
           `insert into ai_engine_events(event_type,level,message,request_id,job_id,metadata)
            values('job_processing_failed','error',$1,$2,$3,'{}')`,
@@ -839,8 +866,8 @@ router.post("/ai/process-next", requireRoles("Admin User", "Owner", "Requester",
 router.post("/owner/reset-ai", requireRoles("Owner"), async (_req, res, next) => {
   try {
     const result = await transaction(async (client) => {
-      const updated = await client.query(`update legal_requests set ai_summary='AI legal review is pending.',ai_review_result=null,status='AI Review Pending',legal_department_status='O',end_user_status='O' where id in(select request_id from request_documents where is_current=true and mime_type='application/pdf') returning id`);
-      await client.query(`update ai_review_jobs set status='queued',attempt_count=0,last_error=null,started_at=null,completed_at=null,current_step='Reset by Owner' where document_id in(select id from request_documents where is_current=true and mime_type='application/pdf')`);
+      const updated = await client.query(`update legal_requests set ai_summary='AI legal review is pending.',ai_review_result=null,status='AI Review Pending',legal_department_status='O',end_user_status='O' where id in(select request_id from request_documents where is_current=true and mime_type in ('application/pdf','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) returning id`);
+      await client.query(`update ai_review_jobs set status='queued',attempt_count=0,last_error=null,started_at=null,completed_at=null,current_step='Reset by Owner',operational_trace=operational_trace || $1::jsonb where document_id in(select id from request_documents where is_current=true and mime_type in ('application/pdf','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))`, [JSON.stringify([reviewQueuedEvent()])]);
       return updated.rowCount;
     });
     res.json({ count: result });

@@ -5,11 +5,8 @@ import AuthShell from "./AuthShell";
 
 const demoAccounts = [
   { username: "requester", role: "Requester" },
-  { username: "reviewer", role: "Legal Reviewer" },
+  { username: "mohamed.almaazmi", name: "Mohamed Almaazmi", role: "Legal Reviewer" },
   { username: "manager", role: "Legal Manager" },
-  { username: "approver", role: "Department Approver" },
-  { username: "admin", role: "Administrator" },
-  { username: "owner", role: "Platform Owner" },
 ];
 const demoPassword = "password123";
 
@@ -128,9 +125,9 @@ function LoginPage({ onLogin, onShowRegister, onShowForgotPassword, theme, onTog
                 key={account.username}
                 disabled={isLoading}
                 onClick={() => chooseDemoAccount(account)}
-                aria-label={`Use ${account.role} demo credentials: ${account.username}`}
+                aria-label={`Use ${account.name || account.role} demo credentials: ${account.username}`}
               >
-                <span>{account.role}</span>
+                <span>{account.name ? `${account.name} · ${account.role}` : account.role}</span>
                 <code>{account.username}</code>
               </button>
             ))}

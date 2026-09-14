@@ -27,6 +27,20 @@
 .internal-review-card-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .internal-review-card-heading > span:first-child { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; }
 .internal-review-help { margin: 9px 0 15px; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
+.internal-review-default-scope { background: var(--surface-subtle); }
+.internal-review-scope-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 18px; padding: 0; margin: 0; list-style: none; }
+.internal-review-scope-list li { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; }
+.internal-review-scope-list svg { flex-shrink: 0; margin-top: 2px; color: var(--ku-blue); }
+.internal-review-source-note { margin: 17px 0 0; padding-top: 13px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.6; color: var(--text-soft); }
+.internal-review-optional-templates > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; }
+.internal-review-optional-templates > summary::-webkit-details-marker { display: none; }
+.internal-review-optional-templates > summary > span { display: flex; align-items: center; gap: 10px; }
+.internal-review-optional-templates > summary svg { flex-shrink: 0; color: var(--text-soft); }
+.internal-review-optional-templates > summary strong { display: block; font-size: 13px; font-weight: 700; }
+.internal-review-optional-templates > summary small { display: block; margin-top: 5px; color: var(--text-soft); font-size: 11px; }
+.internal-review-optional-templates[open] > summary > svg { transform: rotate(180deg); }
+.internal-review-optional-content { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 6px; }
+.internal-review-template-choice { margin-bottom: 17px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
 .internal-review-document { display: flex; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
 .internal-review-document + .internal-review-document { margin-top: 8px; }
 .internal-review-document > svg { flex-shrink: 0; color: var(--text-soft); }
@@ -66,6 +80,7 @@
 .internal-review-run strong { font-size: 13px; }
 .internal-review-run p { margin: 5px 0 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; }
 .internal-review-run button { flex-shrink: 0; }
+.internal-review-run-actions { display: flex; flex-direction: column; flex-shrink: 0; align-items: stretch; gap: 8px; }
 .internal-review-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
 .internal-review-section-heading h4 { margin: 0; font-size: 15px; font-weight: 700; }
 .internal-review-section-heading p { margin: 6px 0 0; color: var(--text-soft); font-size: 12px; }
@@ -101,6 +116,7 @@
 .internal-review-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--ku-blue); border-radius: 50%; animation: review-spin 1s linear infinite; }
 @keyframes review-spin { to { transform: rotate(360deg); } }
 .dark .internal-review-button.text, .dark .internal-review-steps button.is-active { color: #8dbcfb; }
+.dark .internal-review-scope-list svg { color: #8dbcfb; }
 .dark .internal-review-notice { color: #b6eacb; background: #102d25; border-color: #28503e; }
 .dark .internal-review-notice.error { color: #f5b6af; background: #321d23; border-color: #683138; }
 .dark .internal-review-remove { color: #f5b6af; }
@@ -119,6 +135,8 @@
  .internal-review-notice { margin: 16px 16px 0; }
 }
 @media (max-width: 440px) {
+ .internal-review-scope-list { grid-template-columns: 1fr; }
+ .internal-review-default-scope .internal-review-card-heading { align-items: flex-start; flex-wrap: wrap; }
  .internal-review-steps button { flex-direction: column; }
  .internal-review-editor-toolbar { align-items: flex-start; flex-direction: column; }
  .internal-review-private { margin-left: 65px; }

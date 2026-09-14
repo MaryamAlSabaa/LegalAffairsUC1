@@ -10,7 +10,8 @@
     "pdfjs-dist": "^6.1.200",
     "react": "latest",
     "react-dom": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.20",

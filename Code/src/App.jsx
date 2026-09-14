@@ -636,6 +636,7 @@ function App() {
   }
 
   async function refreshRequestsAndEngineState() {
+    requestMutationVersion.current += 1;
     const [refreshedRequests, refreshedEngineState, refreshedEngineEvents] =
       await Promise.all([
         fetchBackendRequests(),
@@ -1303,6 +1304,7 @@ function App() {
             handleDepartmentApproval(selectedRequest.id, decision, commentText)
           }
           onChecklistItemToggle={handleChecklistItemToggle}
+          onRefresh={refreshRequestsAndEngineState}
           users={users}
           onAssignReviewers={(reviewerIds) =>
             handleManagerAssignReviewers(selectedRequest.id, reviewerIds)

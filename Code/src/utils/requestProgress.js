@@ -1,4 +1,4 @@
-import { isPdfDocument } from "./documentTypes.js";
+import { isAiReviewableDocument } from "./documentTypes.js";
 import { getRequestStatusLabel } from "./requestStatus.js";
 
 const finalStatuses = new Set(["Approved", "Closed", "Archived"]);
@@ -30,8 +30,8 @@ export function getRequestProgress(request = {}) {
   const currentDocuments = documents.some((document) => document.isCurrent)
     ? documents.filter((document) => document.isCurrent)
     : documents;
-  const hasPdf = currentDocuments.some((document) => isPdfDocument(typeof document === "string" ? { name: document } : document));
-  const hasAi = status.startsWith("AI Review") || hasPdf || (documents.length === 0 && Boolean(job || request.aiReviewResult));
+  const hasReviewableDocument = currentDocuments.some((document) => isAiReviewableDocument(typeof document === "string" ? { name: document } : document));
+  const hasAi = status.startsWith("AI Review") || hasReviewableDocument || (documents.length === 0 && Boolean(job || request.aiReviewResult));
   const hasReviewer = Boolean(request.assignedReviewerIds?.length || request.assignedReviewerId || request.assignedReviewers?.length || recorded(request.assignedReviewer));
   const hasDepartmentApprover = Boolean(request.assignedDepartmentApproverId || recorded(request.assignedDepartmentApprover));
   const awaitingRequester = ["Waiting for More Information", "Returned to Requester"].includes(status);
@@ -65,8 +65,8 @@ export function getRequestProgress(request = {}) {
     description = needsAttention
       ? "AI review could not finish. Legal Affairs can arrange a retry or continue the review manually."
       : job?.status === "processing" || status === "AI Review Processing"
-        ? `AI review is processing the PDF${job?.currentStep ? `: ${job.currentStep}` : "."}`
-        : `The PDF is queued for AI review${job?.priorityQueuePosition || job?.queuePosition ? ` (position ${job.priorityQueuePosition || job.queuePosition})` : ""}.`;
+        ? `AI review is processing the document${job?.currentStep ? `: ${job.currentStep}` : "."}`
+        : `The document is queued for AI review${job?.priorityQueuePosition || job?.queuePosition ? ` (position ${job.priorityQueuePosition || job.queuePosition})` : ""}.`;
   } else if (awaitingRequester) {
     currentStepId = "requester-update";
     needsAttention = true;

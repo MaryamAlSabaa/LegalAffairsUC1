@@ -66,7 +66,7 @@ function RequestPdfResubmissionPanel({ documents, onUpdateDocuments }) {
       await onUpdateDocuments({ removeDocumentIds, files: newFiles });
       setRemoveDocumentIds([]);
       setNewFiles([]);
-      setMessage("Document update submitted. PDFs are queued for AI review; Office documents are routed for manual review.");
+      setMessage("Document update submitted. PDF and Excel attachments are queued for AI review; Word documents are routed for manual review.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update request documents.");
     } finally {

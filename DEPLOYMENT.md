@@ -107,7 +107,7 @@ Run the API as a managed Windows service under a dedicated, least-privilege serv
 
 ## 5. Shared document storage
 
-Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the host configured by `PDF_STORAGE_PATH`, with metadata and a SHA-256 digest in PostgreSQL. Users receive documents only through an authenticated API endpoint after a role/access-scope check. Legal Reviewers have global portfolio access for colleague coverage; requester and department access remains scoped. PDFs can open in the review workspace; Office documents are downloaded for manual review.
+Every PDF, Word (`.doc/.docx`), or Excel (`.xls/.xlsx`) upload is stored on the host configured by `PDF_STORAGE_PATH`, with metadata and a SHA-256 digest in PostgreSQL. Users receive documents only through an authenticated API endpoint after a role/access-scope check. Legal Reviewers have global portfolio access for colleague coverage; requester and department access remains scoped. PDF and Excel filenames open an embedded preview on the request page. Download is a separate button. Legal Reviewers and Legal Managers see the selected attachment?s checklist and AI findings; requester previews contain no internal analysis. Word files remain available through the explicit Download option.
 
 For production, point `PDF_STORAGE_PATH` to a dedicated encrypted volume or a service-account-protected network share. The account running the Node server needs read/write access; ordinary users do not. Do not place uploaded documents in `Code/public` or OneDrive-synced frontend assets.
 
@@ -157,7 +157,7 @@ Without SMTP, development mode prints the reset link in the server console. Prod
 
 ## 8. Optional AI provider
 
-The default `USE_MOCK_AI_REVIEW=true` keeps PDFs on the KU host and generates a clearly labelled placeholder for the human-review workflow. It does not perform substantive document analysis.
+The default `USE_MOCK_AI_REVIEW=true` keeps documents on the KU host and generates a clearly labelled placeholder for the human-review workflow. It does not perform substantive document analysis.
 
 Only after KU information-security and data-governance approval, configure the server-side provider:
 
@@ -167,14 +167,24 @@ GEMINI_API_KEY=YOUR_SERVER_SIDE_KEY
 GEMINI_MODEL=YOUR_APPROVED_MODEL
 ```
 
-The browser never receives the provider key. The server sends only the claimed PDF and an isolated legal-review prompt, validates the JSON response, writes the checklist and suggestions to PostgreSQL, and still requires human Legal Affairs review.
+The browser never receives the provider key. The server sends only the selected PDF or bounded Excel cell evidence and an isolated legal-review prompt, validates the JSON response, and saves that attachment?s checklist and findings. Opening an unreviewed current PDF or Excel file starts its comparison for Legal Reviewers and Legal Managers; reviewed files can be analyzed again using Review again. Actual analysis requires the provider configuration above. Human Legal Affairs review is still required.
+
+Excel review supports `.xls` and `.xlsx` using SheetJS 0.20.3. It includes up to 12 sheets, 1,000 rows and 100 columns per sheet, 10,000 cells, and 120,000 characters of evidence. The preview has separate visible limits. Omitted content is reported in review coverage. Formulas are not recalculated, and charts, drawings, comments, and embedded files are not analyzed. Risks highlight cells only when the quoted text matches; missing clauses have no highlight. PDF highlights likewise require matching searchable text.
+
+Review setup defaults to Gemini general legal knowledge; no template attachment or approval is required to run the baseline review. Classification, document summary, key and missing clauses, risks, tracked checklist evaluation, additional checklist suggestions, internal notes, and a first-draft response run independently of optional sources. Additional checklist suggestions do not silently change the tracked checklist, and responses still require human confirmation before sharing.
+
+Approved template comparison is an explicit opt-in for each review run. Running without templates leaves saved references and unfinished local edits intact. The selected option is stored in the job?s queued operational trace so processing uses the same choice. Automatic initial reviews use the default without templates.
+
+Similar-case recommendations use up to six relevant historical Approved/Closed requests from the latest 500 eligible records, excluding demo/mock records and the current request. The engine receives only bounded metadata and a short published-response or submitted-description excerpt. Suggestions retain verified source IDs and cannot invent past cases or claim that a closed request was approved. This is internal reference material, not legal authority. If history is empty or unavailable, the default review continues and records the missing comparison. Template and historical-case references must exist in supplied records; Gemini general knowledge is never labelled as a university-approved source. No schema migration is required for these review options.
 
 ## 9. Verification checklist
 
 - `http://localhost:4000/api/health` reports `database: connected` on the host.
 - Registration and login work without any browser database credentials.
 - A requester sees only their requests.
-- A reviewer sees only assigned requests and can open authorized PDFs.
+- A reviewer can open authorized PDF and Excel attachments without a download, navigate evidence, and explicitly download a copy.
+- Selecting another attachment shows its own checklist and findings.
+- Requester previews never show internal findings or risk highlights.
 - A department approver sees only assigned or same-department requests.
 - Admin/Owner user-management actions are enforced by the API.
 - Another device can open the HTTPS/LAN URL and sees the same records and authorized documents.

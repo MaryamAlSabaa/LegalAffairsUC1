@@ -1,17 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import InternalReviewWorkspace from "../review/InternalReviewWorkspace";
 
-import ContractChecklist from "../review/ContractChecklist";
 import ReviewerComments from "../review/ReviewerComments";
 import ReviewerRoutingPanel from "./ReviewerRoutingPanel";
 import DepartmentApprovalPanel from "./DepartmentApprovalPanel";
 import ManagerActions from "./ManagerActions";
-import PdfReviewModal from "./PdfReviewModal";
+import DocumentReviewWorkspace from "./DocumentReviewWorkspace";
 import DocumentDownloadButton from "./DocumentDownloadButton";
 import RequestProgressTimeline from "./RequestProgressTimeline";
 import RequestPdfResubmissionPanel from "./RequestPdfResubmissionPanel";
 import Icon from "../common/Icon";
-import { getDocumentTypeLabel, isPdfDocument } from "../../utils/documentTypes";
+import { getDocumentTypeLabel } from "../../utils/documentTypes";
 import { isAvailableLegalReviewer } from "../../config/reviewTeam";
 import { getLegalTrackerRecord } from "../../utils/legalTracker";
 import { getRequestStatusLabel } from "../../utils/requestStatus";
@@ -224,11 +223,18 @@ function RequestDetails({
   onRouteRequest,
   onDeleteRequest,
   onUpdateDocuments,
+  onRefresh,
 }) {
   const canViewInternalReview = hasInternalReviewAccess(currentUser?.role);
-  // Keep only the selection so refreshed suggestions and permissions reach the popup.
+  // Keep the selected ID so background updates reach the open document review.
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
+  const previewRef = useRef(null);
   const [showReviewerAssignment, setShowReviewerAssignment] = useState(false);
+
+  useEffect(() => { setSelectedDocumentId(null); }, [request?.id]);
+  useEffect(() => {
+    if (selectedDocumentId) previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selectedDocumentId]);
 
   // These two pieces of state make the status card update immediately after workflow saves.
   const [managerDecision, setManagerDecision] = useState(
@@ -289,8 +295,8 @@ function RequestDetails({
 
       {canViewInternalReview && <RequestProgressTimeline request={request} />}
 
-      <div className={`grid grid-cols-1 ${canViewInternalReview ? "xl:grid-cols-3" : ""} gap-6`}>
-        <div className="xl:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 gap-6">
+        <div className="min-w-0 space-y-6">
           <div className="matter-overview-card">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
               <div>
@@ -323,7 +329,7 @@ function RequestDetails({
             <div className="mt-6">
               <h4 className="font-semibold text-slate-900">Supporting Documents</h4>
               <p className="text-sm text-slate-500 mt-1">
-                PDFs open in the secure review workspace. Word and Excel files download through the authenticated server.
+                Select a PDF or Excel attachment to preview it here. Use Download to save a copy.
               </p>
               <ul className="mt-3 space-y-2">
                 {request.documents.length === 0 ? (
@@ -331,11 +337,10 @@ function RequestDetails({
                 ) : (
                   request.documents.map((document) => {
                     const documentName = document.name || document;
-                    const isPdf = isPdfDocument(document);
                     const content = (
                       <>
                         <span className="document-row-icon"><Icon name="file" size={19} /></span>
-                        <span className="document-row-copy"><strong>{documentName}</strong><small>{isPdf ? "Open secure PDF review" : `Download secure ${getDocumentTypeLabel(document)} document`}</small></span>
+                        <span className="document-row-copy"><strong>{documentName}</strong><small>{`Open ${getDocumentTypeLabel(document)} document`}</small></span>
                         {document.isCurrent && request.previousDocumentId && (
                           <span className="ml-2 rounded-full bg-green-100 px-2 py-1 text-xs text-green-700">Current</span>
                         )}
@@ -346,11 +351,10 @@ function RequestDetails({
                     return (
                       <li key={document.id || documentName} className="flex flex-col gap-2 sm:flex-row sm:items-start">
                         <div className="min-w-0 flex-1">
-                        {isPdf ? (
-                          <button type="button" className="document-row" onClick={() => setSelectedDocumentId(document.id || document.url)}>{content}</button>
-                        ) : (
-                          <a className="document-row" href={document.url} target="_blank" rel="noreferrer">{content}</a>
-                        )}
+                          <button type="button" className="document-row" aria-expanded={selectedDocumentId === (document.id || document.url)} onClick={() => {
+                            setSelectedDocumentId(document.id || document.url);
+                            if (selectedDocumentId === (document.id || document.url)) previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                          }}>{content}</button>
                         </div>
                         {canViewInternalReview && <DocumentDownloadButton document={document} />}
                       </li>
@@ -361,6 +365,11 @@ function RequestDetails({
             </div>
           </div>
 
+          {selectedDocument && <div ref={previewRef}>
+            <DocumentReviewWorkspace key={`${selectedDocumentId}-${currentUser?.role}`} document={selectedDocument} requestId={request.id} currentUser={currentUser}
+              canManageReview={canManageReview} onChecklistItemToggle={onChecklistItemToggle} onRefresh={onRefresh} onClose={() => setSelectedDocumentId(null)} />
+          </div>}
+
           {isRequester && request.status === "Waiting for More Information" && (
             <RequestPdfResubmissionPanel
               documents={request.documents}
@@ -369,12 +378,12 @@ function RequestDetails({
           )}
           {canViewInternalReview && request.previousAiReviewResult && (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-              <h3 className="font-bold text-slate-900">Previous PDF AI Review</h3>
-              <p className="mt-1 text-sm text-slate-600">The previous PDF result is kept for comparison while the new PDF is reviewed.</p>
+              <h3 className="font-bold text-slate-900">Previous Document AI Review</h3>
+              <p className="mt-1 text-sm text-slate-600">The previous document result is kept for comparison while the updated documents are reviewed.</p>
               <p className="mt-3 text-sm text-slate-700">{request.previousAiSummary || request.previousAiReviewResult.draft_review_note || "Previous AI review result archived."}</p>
             </div>
           )}
-          {canViewInternalReview && <InternalReviewWorkspace request={request} />}
+          {canViewInternalReview && <InternalReviewWorkspace request={request} onRefresh={onRefresh} />}
           {!canViewInternalReview && request.sharedResponse && <section className="rounded-2xl border border-green-200 bg-white p-5">
             <h3 className="font-bold">Response from Legal Affairs</h3>
             <p className="mt-3 whitespace-pre-wrap">{request.sharedResponse.text}</p>
@@ -423,23 +432,7 @@ function RequestDetails({
           />
         </div>
 
-        {canViewInternalReview && (
-          <ContractChecklist
-            requestId={request.id}
-            document={firstDocument}
-            canManageReview={canManageReview}
-            onChecklistItemToggle={onChecklistItemToggle}
-          />
-        )}
       </div>
-
-      {selectedDocument && (
-        <PdfReviewModal
-          document={selectedDocument}
-          currentUser={currentUser}
-          onClose={() => setSelectedDocumentId(null)}
-        />
-      )}
       {showReviewerAssignment && (
         <ReviewerAssignmentModal
           request={request}
@@ -454,22 +447,3 @@ function RequestDetails({
 }
 
 export default RequestDetails;
-
-/*
-BEGINNER DOCUMENTATION:
-
-1. What is early return?
-If no request is selected, we return a simple message before rendering the full details page.
-
-2. What is component composition?
-RequestDetails uses smaller components inside it: AiSummaryBox, ReviewerComments, ContractChecklist, and PdfReviewModal.
-
-3. What is role-specific rendering?
-Some panels only appear for the role that can act on them. Legal Manager actions are visible only to Legal Managers, and Department Approval is visible only to Department Approvers.
-
-4. What is responsive layout?
-Tailwind classes like grid-cols-1 and xl:grid-cols-3 change the layout depending on screen size.
-
-5. Why click the PDF instead of always showing it?
-Opening the PDF in a popup keeps the details page clean and gives reviewers a focused document-review workspace.
-*/

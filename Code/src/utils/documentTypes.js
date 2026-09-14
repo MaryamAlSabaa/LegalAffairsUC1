@@ -27,6 +27,15 @@ export function isPdfDocument(document) {
   return document?.type === "application/pdf" || getDocumentExtension(document?.name) === "pdf";
 }
 
+export function isSpreadsheetDocument(document) {
+  return ["xls", "xlsx"].includes(getDocumentExtension(document?.name))
+    || ["application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"].includes(document?.type);
+}
+
+export function isAiReviewableDocument(document) {
+  return isPdfDocument(document) || isSpreadsheetDocument(document);
+}
+
 export function getDocumentTypeLabel(document) {
   const extension = getDocumentExtension(document?.name);
   if (extension === "pdf" || document?.type === "application/pdf") return "PDF";

@@ -4,7 +4,7 @@ import { createFrontendDocument } from "../../utils/demoPdfReview";
 import {
   ACCEPTED_DOCUMENT_TYPES,
   getDocumentTypeLabel,
-  isPdfDocument,
+  isAiReviewableDocument,
   isSupportedDocumentFile,
   MAX_ATTACHMENT_SIZE_BYTES,
 } from "../../utils/documentTypes";
@@ -80,7 +80,7 @@ function RequestForm({ onCreateRequest, currentUser }) {
     const submittedAt = new Date().toLocaleString([], {
       year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
     });
-    const isPdf = isPdfDocument(selectedFile);
+    const isReviewable = isAiReviewableDocument(selectedFile);
     const newRequest = {
       title: formData.title || "Untitled Legal Request",
       partyName: formData.partyName,
@@ -93,15 +93,15 @@ function RequestForm({ onCreateRequest, currentUser }) {
       assignedReviewer: "Not Assigned",
       priority: formData.priority,
       riskLevel: getHighestRiskLevel(null),
-      status: isPdf ? "AI Review Pending" : "New",
+      status: isReviewable ? "AI Review Pending" : "New",
       deadline: formData.deadline || "No deadline selected",
       submittedAt,
       description: formData.description || "No description was provided by the requester.",
       documents: [createFrontendDocument(selectedFile, null)],
       uploadFile: selectedFile,
-      aiSummary: isPdf
-        ? "AI legal review is pending. The backend queue will process this PDF and update the checklist when the AI draft is ready."
-        : "Office document secured for manual Legal Affairs review.",
+      aiSummary: isReviewable
+        ? "AI legal review is pending. The document checklist will update when the draft is ready."
+        : "Word document secured for manual Legal Affairs review.",
       aiReviewResult: null,
       reviewerComments: [],
     };

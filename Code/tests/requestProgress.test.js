@@ -8,7 +8,7 @@ const assigned = { assignedReviewerIds: ["reviewer-1"], assignedReviewer: "Legal
 const department = { assignedDepartmentApproverId: "approver-1" };
 const step = (progress, id) => progress.steps.find((item) => item.id === id);
 
-test("a new Office request starts at assignment without an invented AI stage", () => {
+test("a new Word request starts at assignment without an invented AI stage", () => {
   const progress = getRequestProgress({ status: "New", documents: [office] });
   assert.equal(progress.currentStepId, "assignment");
   assert.equal(step(progress, "submitted").state, "completed");
@@ -79,7 +79,7 @@ test("a resubmitted PDF restarts AI and disregards the previous approval decisio
   assert.equal(step(progress, "completion").state, "upcoming");
 });
 
-test("Office resubmission omits AI from an older superseded PDF", () => {
+test("Word resubmission omits AI from an older superseded PDF", () => {
   const progress = getRequestProgress({
     status: "Assigned to Legal Reviewer", ...assigned,
     documents: [{ ...pdf, isCurrent: false }, office],
@@ -89,6 +89,54 @@ test("Office resubmission omits AI from an older superseded PDF", () => {
   assert.equal(progress.currentStepId, "legal-review");
   assert.equal(step(progress, "ai-review"), undefined);
   assert.equal(progress.isComplete, false);
+});
+
+test("current Excel workbooks expose queued, processing and failed AI stages", () => {
+  for (const name of ["budget.xls", "budget.xlsx"]) {
+    for (const [jobStatus, expected, attention] of [
+      ["queued", /document is queued.*position 2/i, false],
+      ["processing", /processing the document.*Reading spreadsheet cells/i, false],
+      ["failed", /could not finish/i, true],
+    ]) {
+      const progress = getRequestProgress({
+        status: "New", documents: [{ name, isCurrent: true }],
+        aiReviewJob: { status: jobStatus, queuePosition: 2, currentStep: "Reading spreadsheet cells" },
+      });
+      assert.equal(progress.currentStepId, "ai-review");
+      assert.equal(step(progress, "ai-review").state, "current");
+      assert.equal(progress.needsAttention, attention);
+      assert.match(progress.description, expected);
+      assert.doesNotMatch(progress.description, /PDF/);
+    }
+  }
+});
+
+test("completed Excel AI work advances to legal review without losing the review stage", () => {
+  const progress = getRequestProgress({
+    status: "Assigned to Legal Reviewer", ...assigned,
+    documents: [{ name: "terms.xlsx", isCurrent: true }], aiReviewJob: { status: "completed" },
+  });
+  assert.equal(progress.currentStepId, "legal-review");
+  assert.equal(step(progress, "ai-review").state, "completed");
+  assert.equal(step(progress, "assignment").state, "completed");
+});
+
+test("Excel resubmission restarts AI while a later Word replacement drops historical AI", () => {
+  const spreadsheet = { name: "terms.xlsx", isCurrent: true };
+  const progress = getRequestProgress({
+    status: "AI Review Pending", ...assigned, documents: [{ ...pdf, isCurrent: false }, spreadsheet],
+    aiReviewJob: { status: "queued" }, aiReviewResult: { reviewed: true },
+    departmentDecision: "Department Approved", managerDecision: "Response Approved by Legal Manager",
+  });
+  assert.equal(progress.currentStepId, "ai-review");
+  assert.equal(step(progress, "ai-review").state, "current");
+  assert.equal(step(progress, "manager-review").state, "upcoming");
+  const wordReplacement = getRequestProgress({
+    status: "Assigned to Legal Reviewer", ...assigned,
+    documents: [{ ...spreadsheet, isCurrent: false }, office], aiReviewJob: { status: "completed" }, aiReviewResult: { reviewed: true },
+  });
+  assert.equal(wordReplacement.currentStepId, "legal-review");
+  assert.equal(step(wordReplacement, "ai-review"), undefined);
 });
 
 test("department preassignment does not imply routing or approval", () => {

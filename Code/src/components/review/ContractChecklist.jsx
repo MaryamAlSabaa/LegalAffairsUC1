@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { contractChecklistItems } from "../../data/mockData";
 
 function buildChecklistItems(document) {
-  if (document?.checklist) {
+  if (document?.checklist?.length) {
     return document.checklist;
   }
 
   return contractChecklistItems.map((item) => ({
     criteria: item,
     page: "Not reviewed yet",
-    note: "AI has not reviewed a PDF for this checklist item yet.",
+    note: "This document has not been compared against this criterion yet.",
     checked: false,
   }));
 }
@@ -19,6 +19,8 @@ function ContractChecklist({
   document,
   canManageReview,
   onChecklistItemToggle,
+  locationForItem,
+  onLocateItem,
 }) {
   const checklistItems = buildChecklistItems(document);
 
@@ -42,7 +44,7 @@ function ContractChecklist({
 
     if (!item.id) {
       setErrorMessage(
-        "This checklist item does not have a database id yet. Reload data from the server and try again.",
+        "Run the document review before updating its checklist.",
       );
       return;
     }
@@ -83,8 +85,8 @@ function ContractChecklist({
     <div className="contract-checklist-panel bg-white border border-slate-200 rounded-2xl p-5">
       <h3 className="font-bold text-slate-900">Contract Review Checklist</h3>
       <p className="text-sm text-slate-500 mt-1">
-        AI pre-selects criteria based on the PDF. Legal reviewers can adjust the
-        checklist manually. Changes are saved to the shared PostgreSQL record.
+        Compare each criterion against this document. Legal reviewers can
+        confirm or correct the AI draft selections.
       </p>
 
       {!canManageReview && (
@@ -103,9 +105,10 @@ function ContractChecklist({
       <div className="contract-checklist-scroll mt-4 space-y-3">
         {checklistItems.map((item) => {
           const isChecked = checkedCriteria.includes(item.criteria);
+          const location = locationForItem?.(item);
 
           return (
-            <label
+            <div
               key={`${item.criteria}-${item.page}`}
               className={`block rounded-xl border p-3 ${
                 isChecked
@@ -122,7 +125,8 @@ function ContractChecklist({
                   className="mt-1 accent-blue-700 disabled:opacity-80"
                   type="checkbox"
                   checked={isChecked}
-                  disabled={!canManageReview || savingCriteria === item.criteria}
+                  aria-label={item.criteria}
+                  disabled={!canManageReview || Boolean(savingCriteria) || !item.id}
                   onChange={() => toggleCriteria(item)}
                 />
 
@@ -146,12 +150,12 @@ function ContractChecklist({
                     {item.note}
                   </p>
 
-                  <span className="mt-3 inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-900 dark:text-blue-200">
-                    Page {item.page}
-                  </span>
+                  {location && onLocateItem ? <button type="button" onClick={() => onLocateItem(location)} className="mt-3 inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
+                    {location.page ? `View page ${location.page}` : `View ${location.sheet}!${location.cell}`}
+                  </button> : <span className="mt-3 inline-flex text-xs text-slate-500">{!item.page || /^(N\/A|Not reviewed yet)$/i.test(item.page) ? "No confirmed source location" : item.page}</span>}
                 </div>
               </div>
-            </label>
+            </div>
           );
         })}
       </div>
